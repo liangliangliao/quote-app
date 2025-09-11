@@ -30,7 +30,7 @@ jobs:
           channel: stable
           cache: true
 
-      # 选出“最后一次被提交改动”的 zip
+      # 选出最后一次被提交改动的 zip
       - name: Pick latest ZIP in repo by last commit time
         id: pickzip
         shell: bash
@@ -48,13 +48,10 @@ jobs:
             if (( ts > latest_ts )); then latest_ts=$ts; latest="$f"; fi
           done
           echo "LATEST_ZIP=$latest" >> "$GITHUB_ENV"
-          echo "Picked: $latest (ts=$latest_ts)"
+          echo "Picked: $latest"
 
-      # ⬇️ 修复点：安装 unzip/7z，并用 unzip 解压
       - name: Install unzip tools
-        shell: bash
         run: |
-          set -euo pipefail
           sudo apt-get update -y
           sudo apt-get install -y unzip p7zip-full
 
@@ -64,16 +61,8 @@ jobs:
           set -euo pipefail
           rm -rf "$PROJECT_DIR"
           mkdir -p "$PROJECT_DIR"
-          if command -v unzip >/dev/null; then
-            unzip -q "$LATEST_ZIP" -d "$PROJECT_DIR"
-          elif command -v 7z >/dev/null; then
-            7z x "$LATEST_ZIP" -o"$PROJECT_DIR" -y >/dev/null
-          else
-            echo "❌ Neither unzip nor 7z present."
-            exit 1
-          fi
+          unzip -q "$LATEST_ZIP" -d "$PROJECT_DIR" || 7z x "$LATEST_ZIP" -o"$PROJECT_DIR" -y >/dev/null
 
-          # 自动定位真实项目根（含 pubspec.yaml）
           if [ ! -f "$PROJECT_DIR/pubspec.yaml" ]; then
             inner=$(find "$PROJECT_DIR" -maxdepth 3 -type f -name pubspec.yaml | head -n1 || true)
             if [ -z "$inner" ]; then
@@ -88,15 +77,26 @@ jobs:
           fi
           echo "Resolved PROJECT_DIR=$PROJECT_DIR"
 
-      - name: Show detected project tree
+      # ⬇️ 关键修复：安装 ANDROID SDK + cmdline-tools（提供 sdkmanager）
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          cmdline-tools-version: 11076708
+          packages: |
+            platform-tools
+            build-tools;34.0.0
+            platforms;android-34
+
+      - name: Export ANDROID_SDK_ROOT and configure Flutter
         shell: bash
         run: |
-          set -euo pipefail
-          echo "PROJECT_DIR=$PROJECT_DIR"
-          ls -la "$PROJECT_DIR"
-          ls -la "$PROJECT_DIR/android" || true
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> "$GITHUB_ENV"
+          echo "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          flutter config --android-sdk "$ANDROID_SDK_ROOT"
+          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null
 
-      - name: Write android/local.properties (Flutter SDK path)
+      - name: Write android/local.properties
         shell: bash
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
@@ -104,32 +104,24 @@ jobs:
           FLUTTER_BIN="$(which flutter)"
           FLUTTER_SDK="$(dirname "$(dirname "$(readlink -f "$FLUTTER_BIN")")")"
           mkdir -p android
-          printf "flutter.sdk=%s\n" "$FLUTTER_SDK" > android/local.properties
+          {
+            printf "sdk.dir=%s\n" "$ANDROID_SDK_ROOT"
+            printf "flutter.sdk=%s\n" "$FLUTTER_SDK"
+          } > android/local.properties
           cat android/local.properties
 
-      - name: Quick sanity check (android gradle files)
+      - name: Quick sanity check
         shell: bash
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
-          set -euo pipefail
-          test -f pubspec.yaml || (echo "❌ pubspec.yaml missing" && exit 1)
-          test -f android/settings.gradle || (echo "❌ android/settings.gradle missing" && exit 1)
-          test -f android/app/build.gradle || (echo "❌ android/app/build.gradle missing" && exit 1)
-
-      - name: Install Android SDK Platform/Build-Tools 34
-        shell: bash
-        run: |
-          set -euo pipefail
-          yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager "platform-tools" >/dev/null
-          sdkmanager "platforms;android-34" >/dev/null
-          sdkmanager "build-tools;34.0.0" >/dev/null
+          test -f pubspec.yaml
+          test -f android/settings.gradle
+          test -f android/app/build.gradle
 
       - name: Flutter clean & pub get
         shell: bash
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
-          set -euo pipefail
           flutter --version
           flutter clean
           flutter pub get
@@ -138,7 +130,6 @@ jobs:
         shell: bash
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
-          set -euo pipefail
           flutter build apk --release
           ls -la build/app/outputs/flutter-apk || true
 
