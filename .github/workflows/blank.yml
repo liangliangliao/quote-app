@@ -48,7 +48,7 @@ jobs:
             if (( ts > latest_ts )); then latest_ts=$ts; latest="$f"; fi
           done
           echo "LATEST_ZIP=$latest" >> "$GITHUB_ENV"
-          echo "Picked: $latest"
+          echo "Picked ZIP: $latest"
 
       - name: Install unzip tools
         run: |
@@ -61,8 +61,10 @@ jobs:
           set -euo pipefail
           rm -rf "$PROJECT_DIR"
           mkdir -p "$PROJECT_DIR"
+          # 解压（优先 unzip，失败再用 7z）
           unzip -q "$LATEST_ZIP" -d "$PROJECT_DIR" || 7z x "$LATEST_ZIP" -o"$PROJECT_DIR" -y >/dev/null
 
+          # 自动定位真正的 Flutter 根目录（含 pubspec.yaml）
           if [ ! -f "$PROJECT_DIR/pubspec.yaml" ]; then
             inner=$(find "$PROJECT_DIR" -maxdepth 3 -type f -name pubspec.yaml | head -n1 || true)
             if [ -z "$inner" ]; then
@@ -72,29 +74,29 @@ jobs:
             fi
             realdir=$(dirname "$inner")
             echo "PROJECT_DIR=$realdir" >> "$GITHUB_ENV"
+            echo "Resolved PROJECT_DIR=$realdir"
           else
             echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+            echo "Resolved PROJECT_DIR=$PROJECT_DIR"
           fi
-          echo "Resolved PROJECT_DIR=$PROJECT_DIR"
 
-      # ⬇️ 关键修复：安装 ANDROID SDK + cmdline-tools（提供 sdkmanager）
-      - name: Setup Android SDK
+      # 仅安装 cmdline-tools（不要在这里传 packages，避免换行被拼成一个参数）
+      - name: Setup Android SDK (cmdline-tools only)
         uses: android-actions/setup-android@v3
         with:
           cmdline-tools-version: 11076708
-          packages: |
-            platform-tools
-            build-tools;34.0.0
-            platforms;android-34
 
-      - name: Export ANDROID_SDK_ROOT and configure Flutter
+      - name: Install Android packages via sdkmanager
         shell: bash
         run: |
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> "$GITHUB_ENV"
-          echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> "$GITHUB_ENV"
+          set -euo pipefail
           echo "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
-          flutter config --android-sdk "$ANDROID_SDK_ROOT"
           yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null
+          # 逐个参数传入，防止把多行当作一个包名
+          "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" \
+            "platform-tools" \
+            "build-tools;34.0.0" \
+            "platforms;android-34"
 
       - name: Write android/local.properties
         shell: bash
@@ -108,9 +110,10 @@ jobs:
             printf "sdk.dir=%s\n" "$ANDROID_SDK_ROOT"
             printf "flutter.sdk=%s\n" "$FLUTTER_SDK"
           } > android/local.properties
+          echo "== android/local.properties =="
           cat android/local.properties
 
-      - name: Quick sanity check
+      - name: Quick sanity check (android gradle files)
         shell: bash
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
