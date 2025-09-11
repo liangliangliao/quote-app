@@ -1,0 +1,119 @@
+name: Build Android APK (Flutter)
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_mode:
+        description: Build mode (release/debug)
+        default: release
+        type: choice
+        options: [release, debug]
+  push:
+    paths:
+      - '**.dart'
+      - 'pubspec.yaml'
+      - 'pubspec.lock'
+      - 'android/**'
+      - 'ios/**'
+      - '.github/workflows/android_build.yml'
+      - '*.zip'  # allow triggering when new source zip is pushed
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      # Make Gradle and Flutter more stable in CI
+      JAVA_TOOL_OPTIONS: -Xmx4g
+      GRADLE_OPTS: -Dorg.gradle.jvmargs="-Xmx4g -Dfile.encoding=UTF-8"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Flutter 3.22.0
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.22.0'
+          channel: 'stable'
+          cache: true
+
+      - name: Unzip source if a zip is present (optional)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # If there is exactly one zip at repo root, unpack it into ./project
+          ZIP_COUNT=$(ls -1 *.zip 2>/dev/null | wc -l || true)
+          if [[ "$ZIP_COUNT" -eq 1 ]]; then
+            ZIP_FILE=$(ls -1 *.zip)
+            echo "Found zip: $ZIP_FILE -> extracting to ./project"
+            rm -rf project
+            mkdir -p project
+            unzip -q "$ZIP_FILE" -d project
+          else
+            echo "No single zip detected; using repository as the project."
+            rsync -a --exclude 'project' ./ ./project/ || true
+          fi
+
+      - name: Show project tree (top level)
+        run: |
+          ls -la
+          echo "---- project/ ----"
+          ls -la project
+
+      - name: Ensure android/local.properties points to Flutter SDK
+        working-directory: project
+        run: |
+          mkdir -p android
+          echo "flutter.sdk=${{ env.FLUTTER_HOME || env.FLUTTER_ROOT || '/opt/hostedtoolcache/flutter/stable-3.22.0-x64' }}" > android/local.properties
+          cat android/local.properties
+
+      - name: Flutter pub get
+        working-directory: project
+        run: flutter pub get
+
+      - name: Doctor (sanity)
+        run: flutter doctor -v
+
+      - name: Clean
+        working-directory: project
+        run: flutter clean
+
+      - name: Build APK
+        working-directory: project
+        run: |
+          set -euo pipefail
+          MODE="${{ inputs.build_mode || 'release' }}"
+          if [[ "$MODE" == "debug" ]]; then
+            flutter build apk --debug --verbose
+          else
+            flutter build apk --release --verbose
+          fi
+
+      - name: Locate APK
+        id: find_apk
+        working-directory: project
+        run: |
+          set -euo pipefail
+          # Flutter produces into build/app/outputs/flutter-apk/
+          REL=$(ls -1 build/app/outputs/flutter-apk/*.apk 2>/dev/null | head -n1 || true)
+          echo "apk_path=$REL" >> $GITHUB_OUTPUT
+          if [[ -z "$REL" ]]; then
+            echo "::error::No APK found under build/app/outputs/flutter-apk"
+            echo "Contents:"
+            find build -maxdepth 4 -type f -name '*.apk' -print || true
+            exit 1
+          fi
+          echo "Found APK: $REL"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: flutter-apk-${{ github.run_number }}
+          path: project/${{ steps.find_apk.outputs.apk_path }}
+          if-no-files-found: error
