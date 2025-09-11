@@ -2,135 +2,160 @@ name: Build Android APK (Flutter)
 
 on:
   workflow_dispatch:
-    inputs:
-      build_mode:
-        description: Build mode
-        type: choice
-        default: release
-        options: [release, debug]
   push:
-    # 监听所有 zip 和常用项目文件，避免只认固定 zip 文件名
-    paths:
-      - '**.dart'
-      - 'pubspec.yaml'
-      - 'pubspec.lock'
-      - 'android/**'
-      - '.github/workflows/android_build.yml'
-      - '*.zip'
+    branches: [ main, master ]
 
 jobs:
-  build:
+  build-android:
     runs-on: ubuntu-latest
+
     env:
-      JAVA_TOOL_OPTIONS: -Xmx4g
-      GRADLE_OPTS: -Dorg.gradle.jvmargs="-Xmx4g -Dfile.encoding=UTF-8"
+      PROJECT_DIR: project
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Set up JDK 17
+      - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: "17"
+          cache: gradle
 
-      - name: Set up Flutter 3.22.0
+      - name: Setup Flutter 3.22.0
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.22.0'
-          channel: 'stable'
+          flutter-version: "3.22.0"
+          channel: stable
           cache: true
 
-      # 选取“最新”的 zip（按修改时间倒序）
-      - name: Pick newest zip
-        id: pick_zip
+      # 选出最后一次被提交改动的 zip（同仓多 ZIP 时总是取最新）
+      - name: Pick latest ZIP in repo by last commit time
+        id: pickzip
         shell: bash
         run: |
           set -euo pipefail
-          # 找出仓库中所有 zip（仅限仓库根；若需要递归可改成 git ls-files 或 find）
-          MAP="$(ls -1t *.zip 2>/dev/null || true)"
-          if [[ -z "$MAP" ]]; then
-            echo "::error::仓库根目录未找到任何 zip"
+          mapfile -t FILES < <(git ls-files '*.zip')
+          if [ ${#FILES[@]} -eq 0 ]; then
+            echo "❌ No zip files found."
             exit 1
           fi
-          ZIP="$(echo "$MAP" | head -n1)"
-          echo "选中的 zip: $ZIP"
-          echo "zip_path=$ZIP" >> "$GITHUB_OUTPUT"
+          latest=""
+          latest_ts=0
+          for f in "${FILES[@]}"; do
+            ts=$(git log -1 --format=%ct -- "$f" || echo 0)
+            if (( ts > latest_ts )); then latest_ts=$ts; latest="$f"; fi
+          done
+          echo "LATEST_ZIP=$latest" >> "$GITHUB_ENV"
+          echo "Picked: $latest"
 
-      - name: Extract selected zip to ./project
+      - name: Install unzip tools
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y unzip p7zip-full
+
+      - name: Unzip project
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf project
-          mkdir -p project
-          unzip -q "${{ steps.pick_zip.outputs.zip_path }}" -d project
-          echo "Top-level of project/:"
-          ls -la project
+          rm -rf "$PROJECT_DIR"
+          mkdir -p "$PROJECT_DIR"
+          unzip -q "$LATEST_ZIP" -d "$PROJECT_DIR" || 7z x "$LATEST_ZIP" -o"$PROJECT_DIR" -y >/dev/null
 
-      # 基础自检，避免解错包
-      - name: Sanity check project
-        working-directory: project
+          # 自动解析真正含 pubspec.yaml 的目录（避免 zip 顶层多一层文件夹）
+          if [ ! -f "$PROJECT_DIR/pubspec.yaml" ]; then
+            inner=$(find "$PROJECT_DIR" -maxdepth 3 -type f -name pubspec.yaml | head -n1 || true)
+            if [ -z "$inner" ]; then
+              echo "❌ pubspec.yaml not found after unzip"
+              find "$PROJECT_DIR" -maxdepth 3 -print
+              exit 1
+            fi
+            realdir=$(dirname "$inner")
+            echo "PROJECT_DIR=$realdir" >> "$GITHUB_ENV"
+            echo "Resolved PROJECT_DIR=$realdir"
+          else
+            echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+            echo "Resolved PROJECT_DIR=$PROJECT_DIR"
+          fi
+
+      # ✅ 正确安装 Android SDK（多行写法，每个包独立一行）
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          cmdline-tools-version: 11076708
+          packages: |
+            platform-tools
+            build-tools;34.0.0
+            platforms;android-34
+
+      # 导出 ANDROID_* 与 FLUTTER_* 变量，供 settings.gradle 定位 loader
+      - name: Export ANDROID & FLUTTER envs
         shell: bash
         run: |
-          set -euo pipefail
-          [[ -f pubspec.yaml ]] || { echo "::error::缺少 pubspec.yaml"; exit 1; }
-          [[ -d android ]] || { echo "::error::缺少 android 目录"; exit 1; }
-          echo "pubspec.yaml (head):"
-          head -n 30 pubspec.yaml || true
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
+          echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
+          echo "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" >> $GITHUB_PATH
 
-      - name: Ensure android/local.properties (flutter.sdk)
-        working-directory: project
+          FLUTTER_BIN="$(which flutter)"
+          FLUTTER_SDK="$(dirname "$(dirname "$(readlink -f "$FLUTTER_BIN")")")"
+          echo "FLUTTER_BIN=$FLUTTER_BIN" >> $GITHUB_ENV
+          echo "FLUTTER_SDK=$FLUTTER_SDK" >> $GITHUB_ENV
+
+          flutter config --android-sdk "$ANDROID_SDK_ROOT"
+          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null
+
+      - name: Write android/local.properties
         shell: bash
+        working-directory: ${{ env.PROJECT_DIR }}
         run: |
           set -euo pipefail
           mkdir -p android
-          # 写入 flutter.sdk，优先用动作的安装路径；也兼容环境变量
-          SDK_PATH="${FLUTTER_HOME:-${FLUTTER_ROOT:-/opt/hostedtoolcache/flutter/stable-3.22.0-x64}}"
-          echo "flutter.sdk=${SDK_PATH}" > android/local.properties
-          echo "android/local.properties:"
+          {
+            printf "sdk.dir=%s\n" "$ANDROID_SDK_ROOT"
+            printf "flutter.sdk=%s\n" "$FLUTTER_SDK"
+          } > android/local.properties
+          echo "----- android/local.properties -----"
           cat android/local.properties
 
-      - name: Flutter pub get
-        working-directory: project
-        run: flutter pub get
-
-      - name: Flutter clean
-        working-directory: project
-        run: flutter clean
-
-      - name: Build APK
-        working-directory: project
+      - name: Quick sanity check
         shell: bash
+        working-directory: ${{ env.PROJECT_DIR }}
         run: |
           set -euo pipefail
-          MODE="${{ inputs.build_mode || 'release' }}"
-          if [[ "$MODE" == "debug" ]]; then
-            flutter build apk --debug --verbose
-          else
-            flutter build apk --release --verbose
-          fi
+          test -f pubspec.yaml
+          test -f android/settings.gradle
+          test -f android/app/build.gradle
 
-      - name: Locate APK
-        id: find_apk
-        working-directory: project
+          echo "----- android/app/build.gradle head -----"
+          head -n 40 android/app/build.gradle || true
+          echo "----- android/settings.gradle -----"
+          sed -n '1,120p' android/settings.gradle || true
+
+      - name: Flutter clean & pub get
         shell: bash
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          flutter --version
+          flutter clean
+          flutter pub get
+
+      - name: Build release APK
+        shell: bash
+        working-directory: ${{ env.PROJECT_DIR }}
         run: |
           set -euo pipefail
-          # Flutter 默认产物目录
-          APK=$(ls -1 build/app/outputs/flutter-apk/*.apk 2>/dev/null | head -n1 || true)
-          if [[ -z "$APK" ]]; then
-            echo "::error::未在 build/app/outputs/flutter-apk 下找到 APK"
-            echo "尝试列出所有 *.apk："
-            find build -type f -name '*.apk' -print || true
-            exit 1
-          fi
-          echo "apk_path=$APK" >> "$GITHUB_OUTPUT"
-          echo "Found APK: $APK"
+          flutter build apk --release -v
+          echo "----- APK dir -----"
+          find build/app/outputs -maxdepth 3 -type f -print || true
 
-      - name: Upload APK
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: flutter-apk-${{ github.run_number }}
-          path: project/${{ steps.find_apk.outputs.apk_path }}
-          if-no-files-found: error
+          name: android-apk
+          path: |
+            ${{ env.PROJECT_DIR }}/build/app/outputs/flutter-apk/app-release.apk
+            ${{ env.PROJECT_DIR }}/build/app/outputs/flutter-apk/app-debug.apk
+          if-no-files-found: warn
