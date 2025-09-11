@@ -17,7 +17,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      # 找出根目录里“最后一次被提交改动”的 zip
+      # 选出根目录里“最后一次被提交改动”的 zip
       - name: Pick latest ZIP in repo by last commit time
         id: pickzip
         shell: bash
@@ -49,8 +49,6 @@ jobs:
           rm -rf "$PROJECT_DIR"
           mkdir -p "$PROJECT_DIR"
           unzip -q "$LATEST_ZIP" -d "$PROJECT_DIR" || 7z x "$LATEST_ZIP" -o"$PROJECT_DIR" -y >/dev/null
-
-          # 尝试定位真正的 Flutter 项目目录（含 pubspec.yaml + android/）
           if [ ! -f "$PROJECT_DIR/pubspec.yaml" ]; then
             inner=$(find "$PROJECT_DIR" -maxdepth 3 -type f -name pubspec.yaml | head -n1 || true)
             if [ -z "$inner" ]; then
@@ -65,7 +63,7 @@ jobs:
           fi
           echo "Resolved PROJECT_DIR=${PROJECT_DIR}"
 
-      # 注意：先解压，再设置 Java，避免 setup-java 寻找 Gradle 文件时报错
+      # 注意：先解压，再装 Java，避免 setup-java 在仓库根找 Gradle 文件时报错
       - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
@@ -79,18 +77,27 @@ jobs:
           channel: stable
           cache: true
 
-      # 配置 ANDROID_SDK，并显式安装所需包
-      - name: Setup Android SDK (cmdline-tools are preinstalled on runner)
+      - name: Setup Android SDK (env & path)
         shell: bash
         run: |
           echo "ANDROID_SDK_ROOT=/usr/local/lib/android/sdk" >> "$GITHUB_ENV"
           echo "ANDROID_HOME=/usr/local/lib/android/sdk" >> "$GITHUB_ENV"
           echo "/usr/local/lib/android/sdk/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
 
-      - name: Accept Android licenses
+      # === 这一步是关键修复：允许 yes 因 SIGPIPE 退出而不失败 ===
+      - name: Accept Android licenses (robust)
         shell: bash
         run: |
-          yes | sdkmanager --licenses >/dev/null
+          set +e
+          set +o pipefail
+          yes | sdkmanager --licenses >/dev/null 2>&1
+          code=$?
+          # 0=正常，141=SIGPIPE，均视为成功
+          if [ $code -ne 0 ] && [ $code -ne 141 ]; then
+            echo "sdkmanager --licenses returned $code" >&2
+            exit $code
+          fi
+          echo "Android licenses accepted (code=$code)."
 
       - name: Install Android packages via sdkmanager
         shell: bash
