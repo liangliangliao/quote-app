@@ -8,7 +8,6 @@ on:
 jobs:
   build-android:
     runs-on: ubuntu-latest
-
     env:
       PROJECT_DIR: project
 
@@ -18,13 +17,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Setup Java 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "17"
-          cache: gradle
-
       - name: Setup Flutter 3.22.0
         uses: subosito/flutter-action@v2
         with:
@@ -32,7 +24,7 @@ jobs:
           channel: stable
           cache: true
 
-      # 选出最后一次被提交改动的 zip（同仓多 ZIP 时总是取最新）
+      # 选出最后一次被提交改动的 zip
       - name: Pick latest ZIP in repo by last commit time
         id: pickzip
         shell: bash
@@ -64,8 +56,6 @@ jobs:
           rm -rf "$PROJECT_DIR"
           mkdir -p "$PROJECT_DIR"
           unzip -q "$LATEST_ZIP" -d "$PROJECT_DIR" || 7z x "$LATEST_ZIP" -o"$PROJECT_DIR" -y >/dev/null
-
-          # 自动解析真正含 pubspec.yaml 的目录（避免 zip 顶层多一层文件夹）
           if [ ! -f "$PROJECT_DIR/pubspec.yaml" ]; then
             inner=$(find "$PROJECT_DIR" -maxdepth 3 -type f -name pubspec.yaml | head -n1 || true)
             if [ -z "$inner" ]; then
@@ -75,35 +65,39 @@ jobs:
             fi
             realdir=$(dirname "$inner")
             echo "PROJECT_DIR=$realdir" >> "$GITHUB_ENV"
-            echo "Resolved PROJECT_DIR=$realdir"
           else
             echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-            echo "Resolved PROJECT_DIR=$PROJECT_DIR"
           fi
+          echo "Resolved PROJECT_DIR=${PROJECT_DIR}"
 
-      # ✅ 正确安装 Android SDK（多行写法，每个包独立一行）
-      - name: Setup Android SDK
+      # ⚠️ 把 setup-java 放到解压之后，并给到正确的 Gradle 缓存路径
+      - name: Setup Java 17 (with Gradle cache)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+          cache-dependency-path: |
+            ${{ env.PROJECT_DIR }}/**/*.gradle*
+            ${{ env.PROJECT_DIR }}/**/gradle-wrapper.properties
+            ${{ env.PROJECT_DIR }}/gradle/libs.versions.toml
+            ${{ env.PROJECT_DIR }}/**/versions.properties
+
+      - name: Setup Android SDK (cmdline-tools only)
         uses: android-actions/setup-android@v3
         with:
           cmdline-tools-version: 11076708
-          packages: |
+          packages: | 
             platform-tools
             build-tools;34.0.0
             platforms;android-34
 
-      # 导出 ANDROID_* 与 FLUTTER_* 变量，供 settings.gradle 定位 loader
       - name: Export ANDROID & FLUTTER envs
         shell: bash
         run: |
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
-          echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
-          echo "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" >> $GITHUB_PATH
-
-          FLUTTER_BIN="$(which flutter)"
-          FLUTTER_SDK="$(dirname "$(dirname "$(readlink -f "$FLUTTER_BIN")")")"
-          echo "FLUTTER_BIN=$FLUTTER_BIN" >> $GITHUB_ENV
-          echo "FLUTTER_SDK=$FLUTTER_SDK" >> $GITHUB_ENV
-
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> "$GITHUB_ENV"
+          echo "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
           flutter config --android-sdk "$ANDROID_SDK_ROOT"
           yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null
 
@@ -112,27 +106,22 @@ jobs:
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
           set -euo pipefail
+          FLUTTER_BIN="$(which flutter)"
+          FLUTTER_SDK="$(dirname "$(dirname "$(readlink -f "$FLUTTER_BIN")")")"
           mkdir -p android
           {
             printf "sdk.dir=%s\n" "$ANDROID_SDK_ROOT"
             printf "flutter.sdk=%s\n" "$FLUTTER_SDK"
           } > android/local.properties
-          echo "----- android/local.properties -----"
           cat android/local.properties
 
-      - name: Quick sanity check
+      - name: Quick sanity check (android gradle files)
         shell: bash
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
-          set -euo pipefail
           test -f pubspec.yaml
           test -f android/settings.gradle
           test -f android/app/build.gradle
-
-          echo "----- android/app/build.gradle head -----"
-          head -n 40 android/app/build.gradle || true
-          echo "----- android/settings.gradle -----"
-          sed -n '1,120p' android/settings.gradle || true
 
       - name: Flutter clean & pub get
         shell: bash
@@ -146,10 +135,8 @@ jobs:
         shell: bash
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
-          set -euo pipefail
-          flutter build apk --release -v
-          echo "----- APK dir -----"
-          find build/app/outputs -maxdepth 3 -type f -print || true
+          flutter build apk --release
+          ls -la build/app/outputs/flutter-apk || true
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
