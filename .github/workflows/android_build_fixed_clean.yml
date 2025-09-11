@@ -24,7 +24,7 @@ jobs:
           channel: stable
           cache: true
 
-      # 选出最后一次被提交改动的 zip
+      # 选出仓库里最近一次提交过的 zip
       - name: Pick latest ZIP in repo by last commit time
         id: pickzip
         shell: bash
@@ -70,7 +70,7 @@ jobs:
           fi
           echo "Resolved PROJECT_DIR=${PROJECT_DIR}"
 
-      # ⚠️ 把 setup-java 放到解压之后，并给到正确的 Gradle 缓存路径
+      # 放到解压之后，确保能命中 Gradle 缓存文件
       - name: Setup Java 17 (with Gradle cache)
         uses: actions/setup-java@v4
         with:
@@ -87,18 +87,28 @@ jobs:
         uses: android-actions/setup-android@v3
         with:
           cmdline-tools-version: 11076708
-          packages: | 
-            platform-tools
-            build-tools;34.0.0
-            platforms;android-34
 
-      - name: Export ANDROID & FLUTTER envs
+      - name: Detect compileSdk/buildTools from project
+        id: detect
+        shell: bash
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          set -euo pipefail
+          COMPILE=$(grep -RhoP "compileSdk(?:Version)?\s*=?\s*\K\d+" android/app/build.gradle android/build.gradle || echo 34)
+          BT=$(grep -RhoP "buildToolsVersion\s*['\"]\K[\d.]+" android/app/build.gradle android/build.gradle || echo 34.0.0)
+          echo "COMPILE_SDK=$COMPILE" >> "$GITHUB_ENV"
+          echo "BUILD_TOOLS=$BT" >> "$GITHUB_ENV"
+          echo "Detected compileSdk=$COMPILE, buildTools=$BT"
+
+      - name: Install Android packages via sdkmanager
         shell: bash
         run: |
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> "$GITHUB_ENV"
-          echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> "$GITHUB_ENV"
+          set -euo pipefail
           echo "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
-          flutter config --android-sdk "$ANDROID_SDK_ROOT"
+          "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_SDK_ROOT" \
+            "platform-tools" \
+            "build-tools;${BUILD_TOOLS}" \
+            "platforms;android-${COMPILE_SDK}"
           yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null
 
       - name: Write android/local.properties
