@@ -5,7 +5,7 @@ on:
   push:
     paths:
       - "quote_app3333.zip"
-      - "quote_app_src_fixed_full_v18_impl_fixpatch11_settings_clean.zip"
+      - "quote_app_src_fixed_full_v18_impl_fixpatch12_loader_includebuild.zip"
 
 jobs:
   build:
@@ -25,8 +25,8 @@ jobs:
         shell: bash
         run: |
           set -e
-          if [[ -f "quote_app_src_fixed_full_v18_impl_fixpatch11_settings_clean.zip" ]]; then
-            zip="quote_app_src_fixed_full_v18_impl_fixpatch11_settings_clean.zip"
+          if [[ -f "quote_app_src_fixed_full_v18_impl_fixpatch12_loader_includebuild.zip" ]]; then
+            zip="quote_app_src_fixed_full_v18_impl_fixpatch12_loader_includebuild.zip"
           elif [[ -f "quote_app333.zip" ]]; then
             zip="quote_app333.zip"
           else
