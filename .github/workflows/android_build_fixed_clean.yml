@@ -104,13 +104,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
-          "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_SDK_ROOT" \
+          export PATH="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$PATH"
+
+          # 安装必须包（每个参数单独传，避免被当成一个字符串）
+          sdkmanager --sdk_root="$ANDROID_SDK_ROOT" \
             "platform-tools" \
             "build-tools;${BUILD_TOOLS}" \
             "platforms;android-${COMPILE_SDK}"
-          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null
 
+          # 接受许可证——避免 Broken pipe 触发 pipefail
+          set +o pipefail
+          yes | sdkmanager --sdk_root="$ANDROID_SDK_ROOT" --licenses >/dev/null 2>&1 || true
+          set -o pipefail
       - name: Write android/local.properties
         shell: bash
         working-directory: ${{ env.PROJECT_DIR }}
