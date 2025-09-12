@@ -69,24 +69,7 @@ jobs:
           fi
     
 
-      - name: Diagnose Kotlin resolution
-        shell: bash
-        working-directory: ${{ env.PROJECT_DIR }}/android
-        run: |
-         set -euo pipefail
-         GRADLE_VER=8.6
-         GRADLE_DIR="$RUNNER_TEMP/gradle-$GRADLE_VER"
-         if [ ! -x "$GRADLE_DIR/bin/gradle" ]; then
-         echo "Downloading Gradle $GRADLE_VER ..."
-         curl -fLso /tmp/gradle.zip "https://services.gradle.org/distributions/gradle-${GRADLE_VER}-bin.zip"
-         unzip -q /tmp/gradle.zip -d "$RUNNER_TEMP"
-         mv "$RUNNER_TEMP/gradle-${GRADLE_VER}" "$GRADLE_DIR" || true
-         fi
-         "$GRADLE_DIR/bin/gradle" -v
-         "$GRADLE_DIR/bin/gradle" :app:dependencyInsight \
-          --dependency kotlin-stdlib \
-          --configuration releaseRuntimeClasspath \
-          --info --stacktrace
+      
           
       - name: Set up Java 17
         uses: actions/setup-java@v4
@@ -233,7 +216,24 @@ jobs:
           echo "== settings.gradle ==" && sed -n '1,120p' android/settings.gradle
           echo "== root build.gradle ==" && sed -n '1,80p' android/build.gradle
           echo "== app/build.gradle (head) ==" && sed -n '1,160p' android/app/build.gradle
-
+      - name: Diagnose Kotlin resolution
+        shell: bash
+        working-directory: ${{ env.PROJECT_DIR }}/android
+        run: |
+         set -euo pipefail
+         GRADLE_VER=8.6
+         GRADLE_DIR="$RUNNER_TEMP/gradle-$GRADLE_VER"
+         if [ ! -x "$GRADLE_DIR/bin/gradle" ]; then
+         echo "Downloading Gradle $GRADLE_VER ..."
+         curl -fLso /tmp/gradle.zip "https://services.gradle.org/distributions/gradle-${GRADLE_VER}-bin.zip"
+         unzip -q /tmp/gradle.zip -d "$RUNNER_TEMP"
+         mv "$RUNNER_TEMP/gradle-${GRADLE_VER}" "$GRADLE_DIR" || true
+         fi
+         "$GRADLE_DIR/bin/gradle" -v
+         "$GRADLE_DIR/bin/gradle" :app:dependencyInsight \
+          --dependency kotlin-stdlib \
+          --configuration releaseRuntimeClasspath \
+          --info --stacktrace
       - name: Flutter clean & pub get
         shell: bash
         working-directory: ${{ env.PROJECT_DIR }}
