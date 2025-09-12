@@ -129,9 +129,9 @@ jobs:
           ! grep -R "apply from: .*flutter\.gradle" android || (echo "Remove command-style flutter.gradle apply" && exit 1)
           ! test -f android/app/src/main/java/io/flutter/plugins/GeneratedPluginRegistrant.java || (echo "Remove GeneratedPluginRegistrant.java" && exit 1)
           ! test -f android/app/src/main/kotlin/io/flutter/plugins/GeneratedPluginRegistrant.kt || (echo "Remove GeneratedPluginRegistrant.kt" && exit 1)
-        shell: bash
-        working-directory: ${{ env.PROJECT_DIR }}
-        run: |
+          shell: bash
+          working-directory: ${{ env.PROJECT_DIR }}
+          run: |
           test -f pubspec.yaml
           test -f android/settings.gradle
           test -f android/app/build.gradle
