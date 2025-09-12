@@ -166,14 +166,13 @@ jobs:
          ls -la build/app/outputs/flutter-apk || true
          ls -la build/app/outputs/apk/release || true
          ls -la android/app/build/outputs/flutter-apk || true
-
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-         name: android-apk
-         path: |
-          ${{ env.PROJECT_DIR }}/build/app/outputs/flutter-apk/app-release.apk
-          ${{ env.PROJECT_DIR }}/build/app/outputs/flutter-apk/*.apk
-          ${{ env.PROJECT_DIR }}/build/app/outputs/apk/release/*.apk
-          ${{ env.PROJECT_DIR }}/android/app/build/outputs/flutter-apk/*.apk
+          name: android-apk
+          path: |
+           ${{ env.PROJECT_DIR }}/build/app/outputs/flutter-apk/app-release.apk
+           ${{ env.PROJECT_DIR }}/build/app/outputs/flutter-apk/*.apk
+            ${{ env.PROJECT_DIR }}/build/app/outputs/apk/release/*.apk
+           ${{ env.PROJECT_DIR }}/android/app/build/outputs/flutter-apk/*.apk
           if-no-files-found: warn
