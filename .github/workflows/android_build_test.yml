@@ -133,21 +133,19 @@ jobs:
         shell: bash
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
-          set -euxo pipefail
-          flutter --version
-          if ! flutter build apk --release -v --stacktrace; then
-            echo "[warn] flutter tool reported failure; attempting to locate any produced APKs..." >&2
-          fi
-          echo "== Search for any produced APKs =="
-          find . -maxdepth 8 -type f -name "*.apk" -print || true
-          FOUND=$(find . -maxdepth 8 -type f -name "*.apk" | head -n1 || true)
-          if [ -n "$FOUND" ]; then
-            mkdir -p build/app/outputs/flutter-apk
-            cp "$FOUND" build/app/outputs/flutter-apk/app-release.apk || true
-            echo "Salvaged APK -> build/app/outputs/flutter-apk/"
-          else
-            echo "No APK files found after build." >&2
-            exit 1
+         set -euxo pipefail
+         flutter --version
+         flutter build apk --release -v
+         echo "== Search for any produced APKs =="
+         find . -maxdepth 8 -type f -name "*.apk" -print || true
+         FOUND=$(find . -maxdepth 8 -type f -name "*.apk" | head -n1 || true)
+         if [ -n "$FOUND" ]; then
+         mkdir -p build/app/outputs/flutter-apk
+         cp "$FOUND" build/app/outputs/flutter-apk/app-release.apk || true
+         echo "Salvaged APK -> build/app/outputs/flutter-apk/"
+         else
+         echo "No APK files found after build." >&2
+         exit 1
           fi
 
       - name: Show APK outputs
