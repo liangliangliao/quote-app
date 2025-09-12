@@ -87,8 +87,17 @@ jobs:
         shell: bash
         working-directory: ${{ env.PROJECT_DIR }}/android
         run: |
-         chmod +x ./gradlew
-         ./gradlew :app:dependencyInsight \
+         set -euo pipefail
+         GRADLE_VER=8.6
+         GRADLE_DIR="$RUNNER_TEMP/gradle-$GRADLE_VER"
+         if [ ! -x "$GRADLE_DIR/bin/gradle" ]; then
+         echo "Downloading Gradle $GRADLE_VER ..."
+         curl -fLso /tmp/gradle.zip "https://services.gradle.org/distributions/gradle-${GRADLE_VER}-bin.zip"
+         unzip -q /tmp/gradle.zip -d "$RUNNER_TEMP"
+         mv "$RUNNER_TEMP/gradle-${GRADLE_VER}" "$GRADLE_DIR" || true
+         fi
+         "$GRADLE_DIR/bin/gradle" -v
+         "$GRADLE_DIR/bin/gradle" :app:dependencyInsight \
           --dependency kotlin-stdlib \
           --configuration releaseRuntimeClasspath \
           --info --stacktrace
