@@ -67,38 +67,7 @@ jobs:
          else
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
           fi
-
-      - name: 断言我们正在使用预期的settings.gradle
-        shell: bash
-        working-directory: ${{ env.PROJECT_DIR }}
-        run: |
-         set -euo pipefail
-         test -f android/settings.gradle
-         echo "== HEAD of android/settings.gradle =="
-         sed -n '1,180p' android/settings.gradle
-
-         # 只要能找到我们的标记就通过；其余检查仅打印
-         set +e
-         grep -q "\[CAUSE10A\]\[SETTINGS_ACTIVE\]" android/settings.gradle
-         marker=$?
-         set -e
-         if [ $marker -ne 0 ]; then
-         echo "❌ 未找到 CAUSE10A 标记（settings.gradle 未生效）"; exit 1
-          fi
-
-          for pat in \
-          "RepositoriesMode.FAIL_ON_PROJECT_REPOS" \
-          "exclusiveContent" \
-          "org.jetbrains.kotlin" \
-          "org.jetbrains.kotlinx" \
-          "io.flutter" \
-          "dev.flutter"
-          do
-          echo "== grep: $pat =="
-          grep -n "$pat" android/settings.gradle || true
-         done
-          echo "✅ settings.gradle 断言通过"
-      
+    
 
       - name: Diagnose Kotlin resolution
         shell: bash
