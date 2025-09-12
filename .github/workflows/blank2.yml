@@ -1,0 +1,257 @@
+name: Build Android APK (Flutter)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+    env:
+      PROJECT_DIR: project
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # 选择仓库里最近一次提交改动的 zip（你只需把迁移后的 zip 放在根目录）
+      - name: Pick latest ZIP in repo by last commit time
+        id: pickzip
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t FILES < <(git ls-files '*.zip')
+          if [ ${#FILES[@]} -eq 0 ]; then
+            echo "❌ No zip files found in repo."
+            exit 1
+          fi
+          latest="" ; latest_ts=0
+          for f in "${FILES[@]}"; do
+            ts=$(git log -1 --format=%ct -- "$f" || echo 0)
+            if (( ts > latest_ts )); then latest_ts=$ts; latest="$f"; fi
+          done
+          echo "LATEST_ZIP=$latest" >> "$GITHUB_ENV"
+          echo "Picked latest zip: $latest"
+
+      - name: Install unzip tools
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y unzip p7zip-full
+
+      - name: Unzip project
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$PROJECT_DIR"
+          mkdir -p "$PROJECT_DIR"
+          unzip -q "$LATEST_ZIP" -d "$PROJECT_DIR" || 7z x "$LATEST_ZIP" -o"$PROJECT_DIR" -y >/dev/null
+          if [ ! -f "$PROJECT_DIR/pubspec.yaml" ]; then
+            inner=$(find "$PROJECT_DIR" -maxdepth 4 -type f -name pubspec.yaml | head -n1 || true)
+            if [ -z "$inner" ]; then
+              echo "❌ pubspec.yaml not found after unzip"
+              find "$PROJECT_DIR" -maxdepth 4 -print
+              exit 1
+            fi
+            realdir=$(dirname "$inner")
+            echo "PROJECT_DIR=$realdir" >> "$GITHUB_ENV"
+          else
+            echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          fi
+          echo "Resolved PROJECT_DIR=${PROJECT_DIR}"
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Flutter 3.22.0
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.22.0"
+          channel: stable
+          cache: true
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          api-level: 34
+          build-tools: 34.0.0
+
+      - name: Accept Android licenses (robust)
+        shell: bash
+        run: |
+          set +e
+          set +o pipefail
+          yes | sdkmanager --licenses >/dev/null 2>&1
+          code=$?
+          if [ $code -ne 0 ] && [ $code -ne 141 ]; then
+            echo "sdkmanager --licenses returned $code" >&2
+            exit $code
+          fi
+          echo "Android licenses accepted (code=$code)."
+
+      - name: Write android/local.properties
+        shell: bash
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          set -euo pipefail
+          FLUTTER_BIN="$(which flutter)"
+          FLUTTER_SDK="$(dirname "$(dirname "$(readlink -f "$FLUTTER_BIN")")")"
+          mkdir -p android
+          {
+            printf "sdk.dir=%s\n" "$ANDROID_SDK_ROOT"
+            printf "flutter.sdk=%s\n" "$FLUTTER_SDK"
+          } > android/local.properties
+          echo "== local.properties ==" && cat android/local.properties
+
+      # === 关键：在 CI 上“热修复”为旧式接入（避免 afterEvaluate 冲突）===
+      - name: Force legacy Flutter Gradle integration (CI hotfix)
+        shell: bash
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          set -euo pipefail
+
+          # 统一根 gradle 插件版本（与 Flutter 3.22 最稳组合）
+          cat > android/build.gradle <<'GRADLE'
+          plugins {
+              id "com.android.application" version "8.2.1" apply false
+              id "org.jetbrains.kotlin.android" version "1.9.23" apply false
+          }
+          GRADLE
+
+          # settings.gradle：只留仓库与 include(":app")，移除 loader/includeBuild
+          cat > android/settings.gradle <<'GRADLE'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  maven { url = uri("https://storage.googleapis.com/download.flutter.io") }
+              }
+          }
+          include(":app")
+          GRADLE
+
+          # 用最小而稳的 app/build.gradle（旧式 apply from）
+          cat > android/app/build.gradle <<'GRADLE'
+          plugins {
+              id "com.android.application"
+              id "org.jetbrains.kotlin.android"
+          }
+
+          // 解析 FLUTTER SDK（支持环境变量或 local.properties）
+          def flutterRoot = System.getenv("FLUTTER_ROOT") ?: System.getenv("FLUTTER_HOME") ?: System.getenv("FLUTTER_SDK")
+          if (!flutterRoot) {
+              def p = new Properties()
+              def f = new File(rootProject.projectDir, "local.properties")
+              if (f.exists()) f.withReader("UTF-8"){ p.load(it) }
+              flutterRoot = p.getProperty("flutter.sdk")
+          }
+          if (!flutterRoot) throw new GradleException("Flutter SDK not found. Set FLUTTER_ROOT/FLUTTER_HOME or flutter.sdk in android/local.properties")
+
+          // 旧式接入（稳定，避开 afterEvaluate 冲突）
+          apply from: "${flutterRoot}/packages/flutter_tools/gradle/flutter.gradle"
+
+          android {
+              namespace "com.example.quote_app"
+              compileSdk 34
+
+              defaultConfig {
+                  applicationId "com.example.quote_app"
+                  minSdk 24
+                  targetSdk 34
+                  versionCode 1
+                  versionName "1.0"
+              }
+
+              buildTypes {
+                  release {
+                      signingConfig signingConfigs.debug
+                      minifyEnabled false
+                      shrinkResources false
+                  }
+              }
+
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+              kotlinOptions { jvmTarget = "17" }
+
+              packagingOptions {
+                  resources {
+                      excludes += [ "META-INF/*", "META-INF/AL2.0", "META-INF/LGPL2.1" ]
+                  }
+              }
+          }
+
+          flutter {
+              source '../..'
+          }
+
+          dependencies {
+              implementation "org.jetbrains.kotlin:kotlin-stdlib:1.9.23"
+          }
+          GRADLE
+
+          echo "== settings.gradle ==" && sed -n '1,120p' android/settings.gradle
+          echo "== root build.gradle ==" && sed -n '1,80p' android/build.gradle
+          echo "== app/build.gradle (head) ==" && sed -n '1,160p' android/app/build.gradle
+
+      - name: Flutter clean & pub get
+        shell: bash
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          flutter --version
+          flutter clean
+          flutter pub get
+
+      - name: Build release APK
+        shell: bash
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          set -euxo pipefail
+          flutter --version
+          flutter build apk --release -v
+          echo "== Search for any produced APKs =="
+          find . -maxdepth 8 -type f -name "*.apk" -print || true
+          FOUND=$(find . -maxdepth 8 -type f -name "*.apk" | head -n1 || true)
+          if [ -n "$FOUND" ]; then
+            mkdir -p build/app/outputs/flutter-apk
+            cp "$FOUND" build/app/outputs/flutter-apk/app-release.apk || true
+            echo "Salvaged APK -> build/app/outputs/flutter-apk/"
+          else
+            echo "No APK files found after build." >&2
+            exit 1
+          fi
+
+      - name: Show APK outputs
+        shell: bash
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          echo "== APK outputs =="
+          ls -la build/app/outputs || true
+          ls -la build/app/outputs/flutter-apk || true
+          ls -la build/app/outputs/apk/release || true
+          ls -la android/app/build/outputs/flutter-apk || true
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: |
+            ${{ env.PROJECT_DIR }}/build/app/outputs/flutter-apk/app-release.apk
+            ${{ env.PROJECT_DIR }}/build/app/outputs/flutter-apk/*.apk
+            ${{ env.PROJECT_DIR }}/build/app/outputs/apk/release/*.apk
+            ${{ env.PROJECT_DIR }}/android/app/build/outputs/flutter-apk/*.apk
+          if-no-files-found: warn
