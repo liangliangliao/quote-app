@@ -35,6 +35,27 @@ jobs:
           done
           echo "LATEST_ZIP=$latest" >> "$GITHUB_ENV"
           echo "Picked latest zip: $latest"
+     
+          - name: Pick latest ZIP in repo by last commit time
+           id: pickzip
+           shell: bash
+           run: |
+           set -euo pipefail
+           mapfile -t FILES < <(git ls-files '*.zip')
+            if [ ${#FILES[@]} -eq 0 ]; then
+            echo "❌ No zip files found."
+            exit 1
+            fi
+            latest=""
+            latest_ts=0
+            for f in "${FILES[@]}"; do
+            ts=$(git log -1 --format=%ct -- "$f" || echo 0)
+            if (( ts > latest_ts )); then latest_ts=$ts; latest="$f"; fi
+           done
+            echo "LATEST_ZIP=${latest}" >> "$GITHUB_ENV"
+            # 关键：把值写到步骤输出，后面能打印出真实文件名
+            echo "zip=${latest}" >> "$GITHUB_OUTPUT"
+      
       - name: Echo picked ZIP
         run: |
          echo "Picked ZIP: ${{ steps.pickzip.outputs.zip }}"
