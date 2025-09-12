@@ -99,21 +99,12 @@ jobs:
           fi
           echo "Android licenses accepted (code=$code)."
 
-      - name: Install Android packages via sdkmanager
-        shell: bash
-        run: |
-          set -euo pipefail
-          sdkmanager "platform-tools" "build-tools;34.0.0" "platforms;android-34"
-          - name: Write android/local.properties
-            shell: bash
-             working-directory: ${{ env.PROJECT_DIR }}
-            run: |
-            set -e
-            mkdir -p android
-            echo "sdk.dir=$ANDROID_SDK_ROOT" > android/local.properties
-            echo "flutter.sdk=$FLUTTER_HOME" >> android/local.properties
-            echo "==== local.properties ===="
-            cat android/local.properties
+          - name: Install Android packages via sdkmanager
+          shell: bash
+           run: |
+          set -e
+          sdkmanager --update
+          sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
       
       - name: Guards (no loader/apply-from & no stale registrant)
         shell: bash
