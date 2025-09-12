@@ -35,6 +35,9 @@ jobs:
           done
           echo "LATEST_ZIP=$latest" >> "$GITHUB_ENV"
           echo "Picked latest zip: $latest"
+      - name: Echo picked ZIP
+        run: |
+         echo "Picked ZIP: ${{ steps.pickzip.outputs.zip }}"
 
       - name: Install unzip tools
         run: |
@@ -44,23 +47,37 @@ jobs:
       - name: Unzip project
         shell: bash
         run: |
-          set -euo pipefail
-          rm -rf "$PROJECT_DIR"
-          mkdir -p "$PROJECT_DIR"
-          unzip -q "$LATEST_ZIP" -d "$PROJECT_DIR" || 7z x "$LATEST_ZIP" -o"$PROJECT_DIR" -y >/dev/null
-          if [ ! -f "$PROJECT_DIR/pubspec.yaml" ]; then
-            inner=$(find "$PROJECT_DIR" -maxdepth 4 -type f -name pubspec.yaml | head -n1 || true)
-            if [ -z "$inner" ]; then
-              echo "❌ pubspec.yaml not found after unzip"
-              find "$PROJECT_DIR" -maxdepth 4 -print
-              exit 1
-            fi
-            realdir=$(dirname "$inner")
-            echo "PROJECT_DIR=$realdir" >> "$GITHUB_ENV"
-          else
-            echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+         set -euo pipefail
+         rm -rf "$PROJECT_DIR"
+         mkdir -p "$PROJECT_DIR"
+         unzip -q "${LATEST_ZIP}" -d "$PROJECT_DIR" || 7z x "${LATEST_ZIP}" -o"$PROJECT_DIR" -y >/dev/null
+         # 解析 pubspec.yaml 实际所在目录
+           if [ ! -f "$PROJECT_DIR/pubspec.yaml" ]; then
+         inner=$(find "$PROJECT_DIR" -maxdepth 3 -type f -name pubspec.yaml | head -n1 || true)
+          if [ -z "$inner" ]; then
+           echo "❌ pubspec.yaml not found after unzip"
+           exit 1
+         fi
+         realdir=$(dirname "$inner")
+         echo "PROJECT_DIR=$realdir" >> "$GITHUB_ENV"
+         else
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
           fi
-          echo "Resolved PROJECT_DIR=${PROJECT_DIR}"
+
+
+      - name: Assert we’re using the intended settings.gradle
+        shell: bash
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+         set -euo pipefail
+         test -f android/settings.gradle
+         echo "== android/settings.gradle HEAD =="
+         sed -n '1,120p' android/settings.gradle
+         echo "== grep checks =="
+         grep -n "RepositoriesMode.FAIL_ON_PROJECT_REPOS" android/settings.gradle
+         grep -n "exclusiveContent" android/settings.gradle
+         grep -n "org.jetbrains.kotlin" android/settings.gradle
+         grep -n "io.flutter" android/settings.gradle
 
       - name: Set up Java 17
         uses: actions/setup-java@v4
