@@ -83,6 +83,16 @@ jobs:
          grep -n "org.jetbrains.kotlin" android/settings.gradle
          grep -n "io.flutter" android/settings.gradle
 
+      - name: Diagnose Kotlin resolution
+        shell: bash
+        working-directory: ${{ env.PROJECT_DIR }}/android
+        run: |
+         chmod +x ./gradlew
+         ./gradlew :app:dependencyInsight \
+          --dependency kotlin-stdlib \
+          --configuration releaseRuntimeClasspath \
+          --info --stacktrace
+          
       - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
