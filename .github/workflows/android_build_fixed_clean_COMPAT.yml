@@ -119,7 +119,7 @@ jobs:
           } > android/local.properties
           cat android/local.properties
 
-      \1
+           \1
       - name: Guards (no loader/apply-from & no stale registrant)
         shell: bash
         working-directory: ${{ env.PROJECT_DIR }}
