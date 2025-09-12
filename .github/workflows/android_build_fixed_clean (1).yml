@@ -77,14 +77,12 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Setup Android SDK (env & path)
-        shell: bash
-        run: |
-          echo "ANDROID_SDK_ROOT=/usr/local/lib/android/sdk" >> "$GITHUB_ENV"
-          echo "ANDROID_HOME=/usr/local/lib/android/sdk" >> "$GITHUB_ENV"
-          echo "/usr/local/lib/android/sdk/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
-
-      # === 这一步是关键修复：允许 yes 因 SIGPIPE 退出而不失败 ===
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+         api-level: 34
+         build-tools: 34.0.0
+       # === 这一步是关键修复：允许 yes 因 SIGPIPE 退出而不失败 ===
       - name: Accept Android licenses (robust)
         shell: bash
         run: |
