@@ -1,0 +1,149 @@
+name: Build Android APK (Flutter)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+  pull_request:
+
+env:
+  PROJECT_DIR: project        # 如果工程在仓库根目录，请改成 '.'
+  FORCE_AGP_VERSION: "8.3.1"  # 与 Flutter 3.22.x 兼容的 AGP
+  FORCE_KOTLIN_VERSION: "1.9.22"
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Flutter 3.22.0
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.22.0'
+          channel: stable
+
+      - name: Accept Android licenses (robust)
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+
+      - name: Install Android packages via sdkmanager
+        shell: bash
+        run: |
+          set -e
+          sdkmanager --update
+          sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0" "cmdline-tools;latest" "patcher;v4"
+
+      - name: Write android/local.properties
+        shell: bash
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          set -e
+          mkdir -p android
+          echo "sdk.dir=$ANDROID_SDK_ROOT" > android/local.properties
+          echo "flutter.sdk=$FLUTTER_HOME" >> android/local.properties
+          echo "==== local.properties ===="
+          cat android/local.properties
+
+      - name: Force AGP/Kotlin versions via Gradle init script (no source change)
+        shell: bash
+        run: |
+          mkdir -p ~/.gradle/init.d
+          cat > ~/.gradle/init.d/force-plugins.gradle.kts <<'KTS'
+          val agp = System.getenv("FORCE_AGP_VERSION") ?: "8.3.1"
+          val kgp = System.getenv("FORCE_KOTLIN_VERSION") ?: "1.9.22"
+
+          settingsEvaluated {
+              pluginManagement {
+                  resolutionStrategy {
+                      eachPlugin {
+                          if (requested.id.id in listOf(
+                                  "com.android.application",
+                                  "com.android.library",
+                                  "com.android.test",
+                                  "com.android.dynamic-feature"
+                              )) {
+                              useVersion(agp)
+                          }
+                          if (requested.id.id.startsWith("org.jetbrains.kotlin")) {
+                              useVersion(kgp)
+                          }
+                      }
+                  }
+              }
+          }
+          KTS
+
+      - name: Purge Gradle caches (avoid mixing old AGP/KGP)
+        shell: bash
+        run: |
+          rm -rf ~/.gradle/caches ~/.gradle/kotlin || true
+
+      - name: Ensure Gradle wrapper matches AGP 8.x (CI only)
+        shell: bash
+        working-directory: ${{ env.PROJECT_DIR }}/android
+        run: |
+          ./gradlew -v || true
+          ./gradlew wrapper --gradle-version 8.4 --distribution-type=bin || true
+
+      - name: Flutter clean & pub get
+        shell: bash
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          flutter --version
+          flutter clean
+          flutter pub get
+
+      - name: Bump Gradle memory (CI only)
+        shell: bash
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          echo "org.gradle.jvmargs=-Xmx4g -Dfile.encoding=UTF-8" >> android/gradle.properties
+
+      - name: Build release APK (arm64 only)
+        shell: bash
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          set -o pipefail
+          mkdir -p build_logs
+          flutter build apk --release --target-platform=android-arm64 -v |& tee build_logs/flutter_build_verbose.log
+          code=${PIPESTATUS[0]}
+          echo "exit_code=${code}" | tee build_logs/exitcode.txt
+          if [ "$code" -ne 0 ]; then
+            echo "---- LAST 300 LINES OF BUILD LOG ----"
+            tail -n 300 build_logs/flutter_build_verbose.log || true
+          fi
+          exit $code
+
+      - name: Show APK outputs
+        shell: bash
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          echo "== build/app/outputs/flutter-apk =="
+          ls -la build/app/outputs/flutter-apk || true
+          echo "== android/app/build/outputs/flutter-apk =="
+          ls -la android/app/build/outputs/flutter-apk || true
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: |
+            ${{ env.PROJECT_DIR }}/build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
+            ${{ env.PROJECT_DIR }}/android/app/build/outputs/flutter-apk/app-arm64-v8a-release.apk
+          if-no-files-found: warn
+
+      - name: Upload build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: ${{ env.PROJECT_DIR }}/build_logs/*
+          if-no-files-found: warn
