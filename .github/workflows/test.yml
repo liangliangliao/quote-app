@@ -116,19 +116,32 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Flutter pub get
+      - name: Resolve Flutter deps (pin v2-safe) & pub get
         if: steps.detect.outputs.project_type == 'flutter'
-        run: flutter pub get
         working-directory: ${{ steps.detect.outputs.project_dir }}
-
-      - name: Ensure Android platform exists
-        if: steps.detect.outputs.project_type == 'flutter'
+        shell: bash
         run: |
-          if [ ! -d "android" ]; then
-            flutter create . --platforms=android --project-name quote_app --org com.example
-          fi
-        working-directory: ${{ steps.detect.outputs.project_dir }}
+         set -euo pipefail
+         # 清掉旧缓存，避免拉到旧插件
+          rm -rf "$HOME/.pub-cache"
+         flutter clean || true
 
+          # 将可能触发 v1 的插件锁到 v2-safe 版本（示例：workmanager）
+          dart pub remove workmanager || true
+          dart pub add workmanager:^0.7.0
+
+          # 获取依赖并打印解析结果
+          flutter pub get
+          echo "== Direct dependencies resolved =="
+          flutter pub deps --style=compact | sed -n '/direct dependencies:/,/dev dependencies:/p'
+
+           # 诊断：如果还有其它插件是 v1 写法，这里能看到具体命中路径
+           PUB_CACHE="${PUB_CACHE:-$HOME/.pub-cache}"
+           echo "== Scan v1 markers in pub cache =="
+           grep -R --include=*.java --include=*.kt -nE \
+           'PluginRegistry\.Registrar|registerWith\s*\(|ShimPluginRegistry|io\.flutter\.app|FlutterApplication' \
+           "$PUB_CACHE" 2>/dev/null || true
+      
       - name: Build APK (Flutter release)
         if: steps.detect.outputs.project_type == 'flutter'
         run: flutter build apk --release
