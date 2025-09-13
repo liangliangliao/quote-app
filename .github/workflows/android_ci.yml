@@ -59,11 +59,11 @@ jobs:
           echo "== List all AndroidManifest.xml (if multiple are present, we must align them) =="
           find android/app/src -name AndroidManifest.xml -print || true
 
-      - name: Last-resort: recreate Android folder with v2 template
+      - name: Last-resort:recreate Android folder with v2 template
         working-directory: ${{ env.PROJECT_DIR }}
         shell: bash
         run: |
-          set -euxo pipefail
+          set -euxo  pipefail
           echo "[info] Recreating android/ with Flutter 3.22 template to guarantee v2 embedding..."
           rm -rf android.bak || true
           mv android android.bak || true
