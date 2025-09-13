@@ -111,17 +111,17 @@ jobs:
         run: sdkmanager "platform-tools" "build-tools;34.0.0" "platforms;android-34"
 
       - name: Verify v2 embedding really landed
-  working-directory: ${{ env.PROJECT_DIR }}
-  run: |
-    echo "== PWD ==" && pwd && ls -la
-    echo "== Manifest activity block =="
-    sed -n '1,220p' android/app/src/main/AndroidManifest.xml | sed -n '/<activity/,/<\/activity>/p'
-    echo "== Search for any v1 identifiers (should be empty) =="
-    grep -R "io.flutter.app" -n android || true
-    grep -R "FlutterApplication" -n android || true
-    grep -R "GeneratedPluginRegistrant" -n android || true
-    echo "== List all AndroidManifest.xml (if multiple are present, we must align them) =="
-    find android/app/src -name AndroidManifest.xml -print
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+         echo "== PWD ==" && pwd && ls -la
+         echo "== Manifest activity block =="
+         sed -n '1,220p' android/app/src/main/AndroidManifest.xml | sed -n '/<activity/,/<\/activity>/p'
+         echo "== Search for any v1 identifiers (should be empty) =="
+         grep -R "io.flutter.app" -n android || true
+         grep -R "FlutterApplication" -n android || true
+         grep -R "GeneratedPluginRegistrant" -n android || true
+         echo "== List all AndroidManifest.xml (if multiple are present, we must align them) =="
+         find android/app/src -name AndroidManifest.xml -print
     
       - name: Quick sanity check
         shell: bash
