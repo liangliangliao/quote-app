@@ -225,7 +225,21 @@ jobs:
           exit 1
          fi
          echo "[ok] No v1-style plugins in resolved plugins."
-      
+      - name: Diagnose Android v1 embedding offenders (project + all pub cache)
+        shell: bash
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+         set -euo pipefail
+         echo "== Show resolved direct dependencies (确认 workmanager 已是 0.7.x) =="
+         flutter pub deps --style=compact | sed -n '/direct dependencies:/,/dev dependencies:/p' || true
+
+         echo "== Scan project android/ for v1 markers =="
+         echo "[1] io.flutter.app / FlutterApplication / GeneratedPluginRegistrant / registerWith(...)"
+         (grep -R -nE "io\.flutter\.app|FlutterApplication|GeneratedPluginRegistrant|registerWith\s*\(" android || true)
+
+          echo "== Scan entire pub cache (hosted + git + any path mirror) for v1 markers =="
+          PUB_CACHE="${PUB_CACHE:-$HOME/.pub-cache}"
+         (grep -R --include=*.java --include=*.kt -nE "PluginRegistry\.Registrar|registerWith\s*\(|io\.flutter\.app|FlutterApplication|GeneratedPluginRegistrant" "$PUB_CACHE" 2>/dev/null || true)
       - name: Build release APK
         shell: bash
         working-directory: ${{ env.PROJECT_DIR }}
