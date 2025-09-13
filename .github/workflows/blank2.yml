@@ -20,10 +20,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with: { fetch-depth: 0 }
-      - name: Clean pub cache (troubleshoot only)
-        shell: bash
-        run: |
-         rm -rf "$HOME/.pub-cache"
+    
       # 选出仓库中“最后一次提交改动”的 zip
       - name: Pick latest ZIP in repo by last commit time
         id: pickzip
@@ -80,10 +77,10 @@ jobs:
         uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: "17" }
 
-      - name: Setup Flutter 3.35.3
+      - name: Setup Flutter 3.22.0
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: "3.35.3"
+          flutter-version: "3.22.0"
           channel: stable
           cache: true
 
@@ -199,6 +196,36 @@ jobs:
          exit 1
          fi
           echo "[ok] No v1-style plugins detected in pub cache."
+         # （可选，排障期用一次）清掉 pub 缓存，避免吃到历史旧版本
+      - name: Clean pub cache (one-off while troubleshooting)
+        shell: bash
+        run: rm -rf "$HOME/.pub-cache"
+
+        # 强钉 workmanager 到 0.7.x（即使 zip 里没带 lock，也能确保解析成正确版本）
+      - name: Pin workmanager to ^0.7.0 (CI safety)
+        shell: bash
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+         dart pub add workmanager:^0.7.0
+         flutter pub get
+         echo "== Resolved version of workmanager =="
+         flutter pub deps --style=compact | grep workmanager || true
+
+      # 检测是否还有 v1 插件（若仍有，会列出具体文件路径并提前失败）
+      - name: Detect Android v1 plugins (after pub get)
+        shell: bash
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+         set -euxo pipefail
+         PUB_CACHE="${PUB_CACHE:-$HOME/.pub-cache}"
+         offenders=$(grep -R --include=*.java --include=*.kt -nE "PluginRegistry\.Registrar|registerWith\s*\(" "$PUB_CACHE/hosted" 2>/dev/null || true)
+         if [ -n "${offenders:-}" ]; then
+         echo "::error::Found plugins using Android v1 embedding:"
+         echo "$offenders"
+          exit 1
+         fi
+         echo "[ok] No v1-style plugins in resolved plugins."
+      
       - name: Build release APK
         shell: bash
         working-directory: ${{ env.PROJECT_DIR }}
