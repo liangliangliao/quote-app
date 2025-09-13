@@ -122,6 +122,27 @@ jobs:
          grep -R "GeneratedPluginRegistrant" -n android || true
          echo "== List all AndroidManifest.xml (if multiple are present, we must align them) =="
          find android/app/src -name AndroidManifest.xml -print
+   
+         - name: Last-resort: recreate Android folder with v2 template
+           working-directory: ${{ env.PROJECT_DIR }}
+           run: |
+            echo "[info] Recreating android/ with Flutter 3.22 template to guarantee v2 embedding..."
+            rm -rf android.bak && mv android android.bak || true
+            flutter create . --platforms=android --org com.example --project-name quote_app --overwrite
+
+            # 恢复/合并必要配置（按你项目需要保留）
+         if [ -f android.bak/app/proguard-rules.pro ]; then
+          cp -f android.bak/app/proguard-rules.pro android/app/proguard-rules.pro
+          # 确保没有 GeneratedPluginRegistrant
+          sed -i '/GeneratedPluginRegistrant/d' android/app/proguard-rules.pro || true
+           fi
+
+          # Manifest 内确保 meta-data（新模板通常已有 v2，不加也可；加上更保险）
+           awk '/<application/{print;print "        <meta-data android:name=\"flutterEmbedding\" android:value=\"2\"/>";next}1' \
+           android/app/src/main/AndroidManifest.xml > /tmp/AndroidManifest.xml && \
+           mv /tmp/AndroidManifest.xml android/app/src/main/AndroidManifest.xml
+
+           echo "[info] Android folder recreated."
     
       - name: Quick sanity check
         shell: bash
