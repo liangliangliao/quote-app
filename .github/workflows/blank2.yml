@@ -80,10 +80,10 @@ jobs:
         uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: "17" }
 
-      - name: Setup Flutter 3.22.0
+      - name: Setup Flutter 3.35.3
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: "3.22.0"
+          flutter-version: "3.35.3"
           channel: stable
           cache: true
 
