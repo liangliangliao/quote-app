@@ -26,21 +26,24 @@ jobs:
           channel: 'stable'
           flutter-version: '3.22.0'
 
-      - name: Locate and unzip latest source package (optional)
+      # 选出仓库中“最后一次提交改动”的 zip（请把 CAUSE12 放根目录并为最新提交）
+      - name: Pick latest ZIP in repo by last commit time
+        id: pickzip
         shell: bash
         run: |
-          set -euxo pipefail
-          LATEST_ZIP=$(ls -1t quote_app_src_fixed_full_*.zip 2>/dev/null | head -n1 || true)
-          echo "PROJECT_DIR=${{ env.PROJECT_DIR }}" >> $GITHUB_ENV
-          if [ -n "${LATEST_ZIP:-}" ]; then
-            echo "[info] Picked ZIP: ${LATEST_ZIP}"
-            rm -rf "${{ env.PROJECT_DIR }}"
-            mkdir -p "${{ env.PROJECT_DIR }}"
-            unzip -q "${LATEST_ZIP}" -d "${{ env.PROJECT_DIR }}"
-          else
-            echo "[info] No source ZIP found; assuming repo already contains the Flutter project."
-            ls -la
+          set -euo pipefail
+          mapfile -t FILES < <(git ls-files '*.zip')
+          if [ ${#FILES[@]} -eq 0 ]; then
+            echo "❌ No zip files found."; exit 1
           fi
+          latest=""; latest_ts=0
+          for f in "${FILES[@]}"; do
+            ts=$(git log -1 --format=%ct -- "$f" || echo 0)
+            if (( ts > latest_ts )); then latest_ts=$ts; latest="$f"; fi
+          done
+          echo "LATEST_ZIP=$latest" >> "$GITHUB_ENV"
+          echo "Picked ZIP: $latest"
+
 
       - name: Verify v2 embedding really landed
         working-directory: ${{ env.PROJECT_DIR }}
