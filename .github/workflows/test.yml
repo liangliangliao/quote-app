@@ -16,34 +16,58 @@ jobs:
 
       - name: Sanity check - list repo root
         run: ls -lah
-      - name: Pick latest committed ZIP in repo root (git)
+      - name: Pick latest ZIP (prefer root tracked; robust fallbacks)
         id: pickzip
         shell: bash
         run: |
           set -euo pipefail
           cd "$GITHUB_WORKSPACE"
-          # tracked .zip at repo root only (no slash)
-          ZIPS="$(git ls-files --full-name | awk '/^[^\\/]+\\.zip$/ {print}' || true)"
-          if [ -z "$ZIPS" ]; then
-            echo "No tracked .zip files in repo root." >&2
-            exit 1
+
+          # 1) 根目录、被 git 追踪的 zip
+          ROOT_TRACKED="$(git ls-files --full-name | awk '/^[^\\/]+\\.zip$/ {print}' || true)"
+
+          pick_by_git_commit() {
+            # 从文件列表中按“最后一次提交时间”取最新
+            printf "%s\n" "$1" | while IFS= read -r f; do
+              [ -n "$f" ] || continue
+              ct="$(git log -1 --format=%ct -- "$f" 2>/dev/null || echo 0)"
+              printf "%s %s\n" "$ct" "$f"
+            done | sort -nr | head -n1 | cut -d' ' -f2-
+          }
+
+          SEL=""
+          if [ -n "${ROOT_TRACKED:-}" ]; then
+            SEL="$(pick_by_git_commit "$ROOT_TRACKED")"
           fi
-          # build "epoch path" lines then choose newest by commit time
-          SEL="$(printf "%s\n" "$ZIPS" | while IFS= read -r z; do
-                   ct="$(git log -1 --format=%ct -- "$z" 2>/dev/null || echo 0)"
-                   printf "%s %s\n" "$ct" "$z"
-                 done | sort -nr | head -n1 | cut -d' ' -f2-)"
-          # fallback by mtime if needed
+
+          # 2) 仓库任意目录、被追踪的 zip
+          if [ -z "$SEL" ]; then
+            ANY_TRACKED="$(git ls-files --full-name | awk '/\\.zip$/ {print}' || true)"
+            if [ -n "${ANY_TRACKED:-}" ]; then
+              SEL="$(pick_by_git_commit "$ANY_TRACKED")"
+            fi
+          fi
+
+          # 3) 根目录未追踪 zip（按 mtime）
           if [ -z "$SEL" ]; then
             SEL="$(ls -1t *.zip 2>/dev/null | head -n1 || true)"
           fi
+
+          # 4) 任意目录未追踪 zip（按 mtime）
           if [ -z "$SEL" ]; then
-            echo "No zip found to use." >&2
+            SEL="$(find . -maxdepth 6 -type f -name '*.zip' -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -n1 | cut -d' ' -f2- || true)"
+            # 去掉开头的 ./ 以便后续拼接路径
+            SEL="${SEL#./}"
+          fi
+
+          if [ -z "$SEL" ]; then
+            echo "No .zip files found (tracked or untracked)."
+            echo "Tip: 把源码 zip 放在仓库根目录，或确保它被 git 追踪。"
             exit 1
           fi
+
           echo "Picked ZIP: $SEL"
           echo "zip=$GITHUB_WORKSPACE/$SEL" >> "$GITHUB_OUTPUT"
-
       - name: Unzip project
         shell: bash
         run: |
