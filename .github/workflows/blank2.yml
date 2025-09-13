@@ -21,7 +21,7 @@ jobs:
         uses: actions/checkout@v4
         with: { fetch-depth: 0 }
 
-      # 选出仓库中“最后一次提交改动”的 zip（请把 CAUSE12 放根目录并为最新提交）
+      # 选出仓库中“最后一次提交改动”的 zip
       - name: Pick latest ZIP in repo by last commit time
         id: pickzip
         shell: bash
@@ -48,26 +48,31 @@ jobs:
           set -euo pipefail
           rm -rf "$PROJECT_DIR"; mkdir -p "$PROJECT_DIR"
           unzip -q "$LATEST_ZIP" -d "$PROJECT_DIR" || 7z x "$LATEST_ZIP" -o"$PROJECT_DIR" -y >/dev/null
-          if [ ! -f "$PROJECT_DIR/pubspec.yaml" ]; then
-            inner=$(find "$PROJECT_DIR" -maxdepth 3 -type f -name pubspec.yaml | head -n1 || true)
-            if [ -z "$inner" ]; then echo "❌ pubspec.yaml not found after unzip"; exit 1; fi
-            echo "PROJECT_DIR=$(dirname "$inner")" >> "$GITHUB_ENV"
-          else
-            echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+          # 优先排除 example 等干扰；并解析真正的项目根
+          inner=$(find "$PROJECT_DIR" -maxdepth 3 -type f -name pubspec.yaml ! -path "*/example/*" | head -n1 || true)
+          if [ -z "$inner" ]; then
+            echo "❌ pubspec.yaml not found after unzip"; exit 1
           fi
-          echo "Resolved PROJECT_DIR=${PROJECT_DIR}"
+          PROJ_DIR=$(dirname "$inner")
+          echo "PROJECT_DIR=$PROJ_DIR" >> "$GITHUB_ENV"
+          echo "Resolved PROJECT_DIR=${PROJ_DIR}"
+
+      # 仅在 android 目录里扫描 v1 标记，避免误报
       - name: Scan for v1 markers (decide if recreate is needed)
         id: scan
         working-directory: ${{ env.PROJECT_DIR }}
         shell: bash
         run: |
-         set -euxo pipefail
-         need=false
-         if grep -R "io.flutter.app" -n . || grep -R "FlutterApplication" -n . || grep -R "GeneratedPluginRegistrant" -n .; then
-         need=true
-         fi
-         echo "need=$need" >> $GITHUB_OUTPUT
-    
+          set -euxo pipefail
+          need=false
+          if grep -R "io.flutter.app" -n android || \
+             grep -R "FlutterApplication" -n android || \
+             grep -R "GeneratedPluginRegistrant" -n android; then
+            need=true
+          fi
+          echo "need=$need" >> $GITHUB_OUTPUT
+
       - name: Setup Java 17
         uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: "17" }
@@ -86,7 +91,7 @@ jobs:
           echo "ANDROID_HOME=/usr/local/lib/android/sdk" >> "$GITHUB_ENV"
           echo "/usr/local/lib/android/sdk/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
 
-      # ✅ 改动 1（必须）：在任何 Gradle/构建之前，先写 local.properties + 导出 FLUTTER_ROOT
+      # 在任何 Gradle/构建之前，先写 local.properties + 导出 FLUTTER_ROOT
       - name: Export FLUTTER_ROOT & write android/local.properties (must run BEFORE any Gradle)
         shell: bash
         working-directory: ${{ env.PROJECT_DIR }}
@@ -103,7 +108,6 @@ jobs:
           echo "Wrote android/local.properties:"
           cat android/local.properties
 
-      # ✅ 改动 2（可选）：需要阿里镜像时开启（与 CAUSE12 的 settings.gradle 联动）
       - name: Toggle Aliyun mirrors (optional)
         if: ${{ inputs.use_aliyun }}
         shell: bash
@@ -124,32 +128,43 @@ jobs:
       - name: Verify v2 embedding really landed
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
-         echo "== PWD ==" && pwd && ls -la
-         echo "== Manifest activity block =="
-         sed -n '1,220p' android/app/src/main/AndroidManifest.xml | sed -n '/<activity/,/<\/activity>/p'
-         echo "== Search for any v1 identifiers (should be empty) =="
-         grep -R "io.flutter.app" -n android || true
-         grep -R "FlutterApplication" -n android || true
-         grep -R "GeneratedPluginRegistrant" -n android || true
-         echo "== List all AndroidManifest.xml (if multiple are present, we must align them) =="
-         find android/app/src -name AndroidManifest.xml -print
-   
-      - name: Recreate android folder with v2 template (only if needed)
+          echo "== PWD ==" && pwd && ls -la
+          echo "== Manifest activity block =="
+          sed -n '1,220p' android/app/src/main/AndroidManifest.xml | sed -n '/<activity/,/<\/activity>/p'
+          echo "== Search for any v1 identifiers (should be empty) =="
+          grep -R "io.flutter.app" -n android || true
+          grep -R "FlutterApplication" -n android || true
+          grep -R "GeneratedPluginRegistrant" -n android || true
+          echo "== List all AndroidManifest.xml (if multiple are present, we must align them) =="
+          find android/app/src -name AndroidManifest.xml -print
+
+      # ✅ 安全重建：在临时目录 flutter create，只拷回 android，不触碰 lib/
+      - name: Recreate android folder with v2 template (safe)
         if: steps.scan.outputs.need == 'true'
         working-directory: ${{ env.PROJECT_DIR }}
         shell: bash
         run: |
-         set -euxo pipefail
-         echo "[info] Recreating android/ only because v1 markers were found..."
-         rm -rf android.bak || true
-         mv android android.bak || true
-         flutter create . --platforms=android --org com.example --project-name quote_app --overwrite
-         # 恢复必要文件，并移除潜在 v1 触发词
-         if [ -f android.bak/app/proguard-rules.pro ]; then
-         cp -f android.bak/app/proguard-rules.pro android/app/proguard-rules.pro
-         sed -i '/GeneratedPluginRegistrant/d' android/app/proguard-rules.pro || true
+          set -euxo pipefail
+          echo "[info] Recreating android/ safely..."
+          rm -rf android.bak || true
+          mv android android.bak || true
+
+          TMPDIR="$(mktemp -d)"
+          pushd "$TMPDIR"
+          flutter create temp_app --platforms=android --org com.example --project-name quote_app
+          popd
+
+          rm -rf android
+          mkdir -p android
+          rsync -a "$TMPDIR/temp_app/android/" android/
+
+          # 恢复必要文件（如有）
+          if [ -f android.bak/app/proguard-rules.pro ]; then
+            cp -f android.bak/app/proguard-rules.pro android/app/proguard-rules.pro
           fi
-          
+
+          echo "[info] android/ recreated without touching lib/"
+
       - name: Quick sanity check
         shell: bash
         working-directory: ${{ env.PROJECT_DIR }}
@@ -182,7 +197,7 @@ jobs:
           if [ -n "$FOUND" ]; then
             mkdir -p build/app/outputs/flutter-apk
             DEST="build/app/outputs/flutter-apk/app-release.apk"
-            # 关键修复：如果源和目标本就是同一文件，则跳过复制，避免 "are the same file" 失败
+            # 若源与目标本是同一文件（含 ./ 前缀、符号链接等），跳过复制
             if [ -e "$DEST" ] && [ "$FOUND" -ef "$DEST" ]; then
               echo "APK already at $DEST; skip copying."
             else
@@ -203,7 +218,8 @@ jobs:
           ls -la build/app/outputs/flutter-apk || true
           ls -la build/app/outputs/apk/release || true
           ls -la android/app/build/outputs/flutter-apk || true
-# 关键：构建时打开 --stacktrace/--info，并把完整日志收集成文件
+
+      # 构建日志
       - name: Build APK (Flutter, verbose)
         working-directory: ${{ env.PROJECT_DIR }}
         env:
