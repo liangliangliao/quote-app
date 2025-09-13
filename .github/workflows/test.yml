@@ -163,6 +163,25 @@ jobs:
           else
            echo "No v1 markers found in pub cache."
           fi
+
+      - name: Diagnose v1 markers in *app code* only
+        if: steps.detect.outputs.project_type == 'flutter'
+        working-directory: ${{ steps.detect.outputs.project_dir }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "== Scan android/ (app code) for v1 markers =="
+          MATCHES="$(grep -R --include=*.kt --include=*.java -nE \
+          'io\.flutter\.app|FlutterApplication|GeneratedPluginRegistrant\.registerWith|PluginRegistry\.Registrar|registerWith\s*\(|ShimPluginRegistry|PluginRegistrantCallback' \
+          android 2>/dev/null || true)"
+          if [ -n "$MATCHES" ]; then
+          echo "$MATCHES"
+           echo "::error::Your *app* android code still references Android v1 embedding APIs above."
+           exit 1
+            else
+           echo "No v1 markers found in app code (android/)."
+          fi
+      
       - name: Build APK (Flutter release)
         if: steps.detect.outputs.project_type == 'flutter'
         run: flutter build apk --release
