@@ -203,7 +203,14 @@ jobs:
            echo "No v1 markers found in app code (android/)."
           fi
 
-      
+      - name: Sanity:show project dir & critical files
+        shell: bash
+        working-directory: ${{ steps.detect.outputs.project_dir }}
+        run: |
+          pwd
+          ls -al android/app/src/main/java/io/flutter/plugins || true
+          sed -n '1,120p' android/app/src/main/AndroidManifest.xml
+    
       - name: Build APK (Flutter release)
         if: steps.detect.outputs.project_type == 'flutter'
         run: flutter build apk --release
