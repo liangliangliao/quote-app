@@ -171,22 +171,31 @@ jobs:
         shell: bash
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
-          set -euxo pipefail
-          flutter --version
+         set -euxo pipefail
+         flutter --version
+         # 常规构建（失败也继续做挽救）
           if ! flutter build apk --release -v; then
-            echo "[warn] flutter tool couldn't find the APK; attempting salvage..." >&2
-          fi
+          echo "[warn] flutter tool couldn't find the APK; attempting salvage..." >&2
+           fi
+
           echo "== Search for any produced APKs =="
-          find . -maxdepth 8 -type f -name "*.apk" -print || true
-          FOUND=$(find . -maxdepth 8 -type f -name "*.apk" | head -n1 || true)
-          if [ -n "$FOUND" ]; then
-            mkdir -p build/app/outputs/flutter-apk
-            cp "$FOUND" build/app/outputs/flutter-apk/app-release.apk || cp "$FOUND" build/app/outputs/flutter-apk/$(basename "$FOUND")
-            echo "Salvaged APK -> build/app/outputs/flutter-apk/"
-          else
-            echo "No APK files found after build." >&2
-            exit 1
-          fi
+         # 优先在 flutter-apk 目录找，其次全局找
+          FOUND="$( { find ./build/app/outputs/flutter-apk -maxdepth 2 -type f -name '*.apk' -print 2>/dev/null || true; \
+                find . -maxdepth 8 -type f -name '*.apk' -print 2>/dev/null || true; } | head -n1 )"
+
+           if [ -n "${FOUND:-}" ]; then
+          mkdir -p build/app/outputs/flutter-apk
+          DEST="build/app/outputs/flutter-apk/$(basename "$FOUND")"
+          if [ "$FOUND" != "$DEST" ]; then
+           cp -f "$FOUND" "$DEST"
+           echo "APK copied to $DEST"
+         else
+          echo "APK already in $DEST, skip copying."
+         fi
+         else
+         echo "No APK files found after build." >&2
+         exit 1
+         fi
 
       - name: Show APK outputs
         shell: bash
