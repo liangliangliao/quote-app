@@ -73,7 +73,33 @@ jobs:
         run: |
           unzip -q "${{ steps.pickzip.outputs.zip }}" -d .
           echo "After unzip:"; ls -lah
-          
+      - name: Detect project type and root
+        id: detect
+        shell: bash
+        run: |
+          set -euo pipefail
+          # 1) 找 Flutter 项目根（含 pubspec.yaml）
+          FLUTTER_DIR="$(find . -maxdepth 6 -type f -name pubspec.yaml | head -n1 | xargs -I{} dirname {} || true)"
+          GRADLE_DIR=""
+
+          # 2) 若不是 Flutter，找原生 Android Gradle 工程
+          if [ -z "$FLUTTER_DIR" ]; then
+            GRADLE_DIR="$(find . -maxdepth 6 -type f \( -name settings.gradle -o -name settings.gradle.kts \) \
+                           | head -n1 | xargs -I{} dirname {} || true)"
+          fi
+
+          if [ -n "$FLUTTER_DIR" ]; then
+            echo "project_type=flutter" >> "$GITHUB_OUTPUT"
+            echo "project_dir=$FLUTTER_DIR" >> "$GITHUB_OUTPUT"
+            echo "Detected Flutter project at: $FLUTTER_DIR"
+          elif [ -n "$GRADLE_DIR" ]; then
+            echo "project_type=gradle" >> "$GITHUB_OUTPUT"
+            echo "project_dir=$GRADLE_DIR" >> "$GITHUB_OUTPUT"
+            echo "Detected Android Gradle project at: $GRADLE_DIR"
+          else
+            echo "❌ 未检测到 Flutter 或 Android Gradle 工程（缺少 pubspec.yaml / settings.gradle）"
+            exit 2
+          fi  
       # ---------- Flutter path (preferred) ----------
       - name: Set up JDK 17 (for both Flutter & Gradle)
         if: steps.detect.outputs.project_type == 'flutter' || steps.detect.outputs.project_type == 'gradle'
