@@ -20,7 +20,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with: { fetch-depth: 0 }
-
+      - name: Clean pub cache (troubleshoot only)
+        shell: bash
+        run: |
+         rm -rf "$HOME/.pub-cache"
       # 选出仓库中“最后一次提交改动”的 zip
       - name: Pick latest ZIP in repo by last commit time
         id: pickzip
