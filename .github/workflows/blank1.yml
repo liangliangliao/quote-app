@@ -157,6 +157,14 @@ jobs:
           ls -la build/app/outputs/flutter-apk || true
           ls -la build/app/outputs/apk/release || true
           ls -la android/app/build/outputs/flutter-apk || true
+# 关键：构建时打开 --stacktrace/--info，并把完整日志收集成文件
+      - name: Build APK (Flutter, verbose)
+        working-directory: ${{ env.PROJECT_DIR }}
+        env:
+          GRADLE_OPTS: "-Dorg.gradle.console=plain -Dorg.gradle.warning.mode=all"
+        run: |
+          set -o pipefail
+          flutter build apk -v --release | tee $GITHUB_WORKSPACE/flutter-build.log
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
