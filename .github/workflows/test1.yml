@@ -15,10 +15,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: List Repo Root
+      - name: Sanity check - list repo root
         run: ls -lah
 
-      - name: Pick Latest ZIP (Prefer Root Tracked; Robust Fallbacks)
+      # ① 选最新 zip（保持你现有逻辑，但更健壮）
+      - name: Pick latest ZIP (prefer root tracked; robust fallbacks)
         id: pickzip
         shell: bash
         run: |
@@ -55,13 +56,13 @@ jobs:
           echo "Picked ZIP: $SEL"
           echo "zip=$GITHUB_WORKSPACE/$SEL" >> "$GITHUB_OUTPUT"
 
-      - name: Unzip Project
+      - name: Unzip project
         shell: bash
         run: |
           unzip -q "${{ steps.pickzip.outputs.zip }}" -d .
           echo "After unzip:"; ls -lah
 
-      - name: Detect Project Type And Root
+      - name: Detect project type and root
         id: detect
         shell: bash
         run: |
@@ -84,14 +85,15 @@ jobs:
             exit 2
           fi
 
-      - name: Set Up JDK 17
+      - name: Set up JDK 17 (for both Flutter & Gradle)
         if: steps.detect.outputs.project_type == 'flutter' || steps.detect.outputs.project_type == 'gradle'
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Set Up Flutter 3.22 (Strict)
+      # ② 默认先用 Flutter 3.22（严格模式）
+      - name: Set up Flutter (strict / 3.22)
         if: steps.detect.outputs.project_type == 'flutter'
         id: flutter_strict
         uses: subosito/flutter-action@v2
@@ -100,102 +102,50 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Patch Android To Embedding V2
+      - name: Resolve Flutter deps (pin v2-safe) & pub get
+        if: steps.detect.outputs.project_type == 'flutter'
+        id: pubget_strict
+        working-directory: ${{ steps.detect.outputs.project_dir }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$HOME/.pub-cache"
+          flutter clean || true
+          dart pub remove workmanager || true
+          dart pub add workmanager:^0.7.0
+          flutter pub get
+          echo "== .flutter-plugins ==========="
+          [ -f .flutter-plugins ] && sed -n '1,120p' .flutter-plugins || true
+          echo "== .flutter-plugins-dependencies ==========="
+          [ -f .flutter-plugins-dependencies ] && sed -n '1,120p' .flutter-plugins-dependencies || true
+
+      - name: Clean ANY checked-in GeneratedPluginRegistrant
         if: steps.detect.outputs.project_type == 'flutter'
         working-directory: ${{ steps.detect.outputs.project_dir }}
         shell: bash
         run: |
           set -euo pipefail
-          ANDROID_DIR="android"
-          APP_DIR="$ANDROID_DIR/app/src"
+          find android -type f -regex '.*io/flutter/plugins/GeneratedPluginRegistrant\.\(java\|kt\)$' -print -delete || true
 
-          # 1) Normalize AndroidManifest.xml: remove v1 Application; add embedding=2; ensure .MainActivity
-          mapfile -t MANIS < <(find "$APP_DIR" -type f -name AndroidManifest.xml)
-          for M in "${MANIS[@]}"; do
-            sed -i -E 's/[[:space:]]*android:name="io\.flutter\.app\.FlutterApplication"//g' "$M"
-            sed -i -E 's/android:name="io\.flutter\.embedding\.android\.FlutterActivity"/android:name=".MainActivity"/g' "$M" || true
-            if ! grep -q 'android:name="flutterEmbedding"' "$M"; then
-              awk '{print} /<application[^>]*>/ && !i {print "        <meta-data android:name=\"flutterEmbedding\" android:value=\"2\"/>"; i=1}' "$M" > "$M.__tmp__" && mv "$M.__tmp__" "$M"
+      - name: Normalize all AndroidManifest.xml to v2
+        if: steps.detect.outputs.project_type == 'flutter'
+        working-directory: ${{ steps.detect.outputs.project_dir }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t MANIS < <(find android/app/src -type f -name AndroidManifest.xml)
+          for MANI in "${MANIS[@]}"; do
+            echo "Normalizing $MANI"
+            sed -i 's/android:name="io\.flutter\.app\.FlutterApplication"[^>]*/ /g' "$MANI"
+            if ! grep -q 'android:name="flutterEmbedding"' "$MANI"; then
+              awk '{print} /<application[^>]*>/ && !i {print "        <meta-data android:name=\"flutterEmbedding\" android:value=\"2\"/>"; i=1}' "$MANI" > "$MANI.__tmp__" && mv "$MANI.__tmp__" "$MANI"
+            fi
+            if grep -q 'android:name="io.flutter.embedding.android.FlutterActivity"' "$MANI"; then
+              sed -i 's/android:name="io\.flutter\.embedding\.android\.FlutterActivity"/android:name=".MainActivity"/' "$MANI"
             fi
           done
 
-          # 2) Patch MainActivity to v2 (Kotlin / Java)
-          MA_KT="$(find "$ANDROID_DIR" -type f -path "*/app/src/*/kotlin/*/MainActivity.kt" | head -n1 || true)"
-          MA_JAVA="$(find "$ANDROID_DIR" -type f -path "*/app/src/*/java/*/MainActivity.java" | head -n1 || true)"
-
-          if [ -n "$MA_KT" ]; then
-            sed -i 's#import io\.flutter\.app\.FlutterActivity#import io.flutter.embedding.android.FlutterActivity#g' "$MA_KT" || true
-            sed -i 's#import io\.flutter\.plugins\.GeneratedPluginRegistrant;*##g' "$MA_KT" || true
-            awk 'BEGIN{skip=0}
-                 /class[[:space:]]+MainActivity[[:space:]]*:[[:space:]]*FlutterActivity/ {print "class MainActivity: FlutterActivity() {}"; next}
-                 /override[[:space:]]+fun[[:space:]]+onCreate\(.*\)\s*{/ {skip=1; next}
-                 skip==1 && /GeneratedPluginRegistrant\.registerWith/ {next}
-                 skip==1 && /}/ {skip=0; next}
-                 skip==0 {print}' "$MA_KT" > "$MA_KT.__tmp__" && mv "$MA_KT.__tmp__" "$MA_KT"
-
-          elif [ -n "$MA_JAVA" ]; then
-            sed -i 's#import io\.flutter\.app\.FlutterActivity;#import io.flutter.embedding.android.FlutterActivity;#g' "$MA_JAVA" || true
-            sed -i 's#import io\.flutter\.plugins\.GeneratedPluginRegistrant;*;*##g' "$MA_JAVA" || true
-            awk 'BEGIN{skip=0}
-                 /public[[:space:]]+class[[:space:]]+MainActivity[[:space:]]+extends[[:space:]]+FlutterActivity/ {print "public class MainActivity extends FlutterActivity {}"; next}
-                 /void[[:space:]]+onCreate\(Bundle.*\)\s*{/ {skip=1; next}
-                 skip==1 && /GeneratedPluginRegistrant\.registerWith/ {next}
-                 skip==1 && /}/ {skip=0; next}
-                 skip==0 {print}' "$MA_JAVA" > "$MA_JAVA.__tmp__" && mv "$MA_JAVA.__tmp__" "$MA_JAVA"
-
-          else
-            PKG_LINE="$(grep -R --include=AndroidManifest.xml -nE 'package="' "$APP_DIR" | head -n1 | sed -E 's/.*package=\"([^"]+)\".*/\1/')"
-            PKG_DIR="$ANDROID_DIR/app/src/main/kotlin/$(echo "$PKG_LINE" | tr . /)"
-            mkdir -p "$PKG_DIR"
-            printf "package %s\nimport io.flutter.embedding.android.FlutterActivity\nclass MainActivity: FlutterActivity()\n" "$PKG_LINE" > "$PKG_DIR/MainActivity.kt"
-          fi
-
-          # 3) Remove any committed GeneratedPluginRegistrant (v1 artifact)
-          find "$ANDROID_DIR" -type f -regex '.*io/flutter/plugins/GeneratedPluginRegistrant\.\(java\|kt\)$' -print -delete || true
-
-          # 4) If a custom Application extends FlutterApplication, downgrade to native Application
-          mapfile -t APPS < <(grep -R --include=*.kt --include=*.java -lE 'extends[[:space:]]+FlutterApplication|:.*FlutterApplication\(\)' "$ANDROID_DIR" || true)
-          for A in "${APPS[@]}"; do
-            sed -i -E 's#extends[[:space:]]+FlutterApplication#extends android.app.Application#g' "$A" || true
-            sed -i -E 's#:.*FlutterApplication\(\)#: android.app.Application()#g' "$A" || true
-            sed -i -E 's#import[[:space:]]+io\.flutter\.app\.FlutterApplication;*##g' "$A" || true
-          done
-
-          echo "== Quick check after patch =="
-          (grep -R --include=*.kt --include=*.java -nE 'io\.flutter\.app\.Flutter(Application|Activity|FragmentActivity)|GeneratedPluginRegistrant\.registerWith|PluginRegistry|FlutterMain|ShimPluginRegistry' android 2>/dev/null || true) | sed -n '1,200p'
-
-      - name: Upgrade Dependencies To V2-Safe Set
-        if: steps.detect.outputs.project_type == 'flutter'
-        working-directory: ${{ steps.detect.outputs.project_dir }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          DART_VER="$(dart --version 2>&1 | sed -n 's/^Dart SDK version: \([0-9.]*\).*/\1/p')"
-          echo "Detected Dart SDK: $DART_VER"
-          version_lt() { [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -n1)" != "$2" ]; }
-
-          IMG_PICKER_VER="^1.2.0"
-          if version_lt "$DART_VER" "3.6.0"; then
-            IMG_PICKER_VER="^1.1.2"
-          fi
-          echo "Pin image_picker to: $IMG_PICKER_VER"
-
-          dart pub add workmanager:^0.7.0 || true
-          dart pub add android_alarm_manager_plus:^4.0.8 || true
-          if ! dart pub add "image_picker:${IMG_PICKER_VER}"; then
-            dart pub add image_picker:^1.1.2 || true
-          fi
-          if ! grep -q '^[[:space:]]*flutter_local_notifications:' pubspec.yaml; then
-            dart pub add flutter_local_notifications:^17.2.4 || true
-          fi
-
-          flutter pub get
-          echo "== .flutter-plugins (first 120) =="
-          [ -f .flutter-plugins ] && sed -n '1,120p' .flutter-plugins || true
-          echo "== .flutter-plugins-dependencies (first 120) =="
-          [ -f .flutter-plugins-dependencies ] && sed -n '1,120p' .flutter-plugins-dependencies || true
-
-      - name: Diagnose V1 Markers In App Code & Manifests
+      - name: Deep diagnose v1 markers in app code & manifests
         if: steps.detect.outputs.project_type == 'flutter'
         id: v1app
         working-directory: ${{ steps.detect.outputs.project_dir }}
@@ -215,7 +165,7 @@ jobs:
           [ -n "$MANI_MATCHES" ] && CNT=$((CNT+1))
           echo "count=$CNT" >> "$GITHUB_OUTPUT"
 
-      - name: Diagnose V1 Markers In Plugins (Count Only)
+      - name: Diagnose Android v1 offenders in plugins (do not fail, count only)
         if: steps.detect.outputs.project_type == 'flutter'
         id: v1plugins
         working-directory: ${{ steps.detect.outputs.project_dir }}
@@ -232,7 +182,7 @@ jobs:
           [ -n "$MATCHES" ] && COUNT=1
           echo "count=$COUNT" >> "$GITHUB_OUTPUT"
 
-      - name: Bypass V1 Gate When Clean (CI Only)
+      - name: TEMP:bypass v1 gate in flutter_tools (CI only; safe when both counts=0)
         if: steps.detect.outputs.project_type == 'flutter' && steps.v1app.outputs.count == '0' && steps.v1plugins.outputs.count == '0'
         shell: bash
         run: |
@@ -242,12 +192,44 @@ jobs:
           sed -i 's/checkForDeprecation();//' "$TOOLS_DIR/project.dart" || true
           sed -i "s/Build failed due to use of deleted Android v1 embedding\./Bypassed v1 gate in CI./" "$TOOLS_DIR/project.dart" || true
 
-      - name: Build APK (Flutter 3.22)
+      # ====== ⬇️ 这里开始：替换为“捕获→注解→按原样失败”三步（Flutter 3.22 严格构建） ======
+      - name: Build APK (Flutter 3.22 strict · capture logs)
+        if: steps.detect.outputs.project_type == 'flutter' && steps.v1app.outputs.count == '0' && steps.v1plugins.outputs.count == '0'
+        id: build_strict
+        working-directory: ${{ steps.detect.outputs.project_dir }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          (flutter build apk --release -v) 2>&1 | tee build_apk_strict.log
+          echo "code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+
+      - name: Annotate compiler errors (Flutter 3.22 strict)
         if: steps.detect.outputs.project_type == 'flutter' && steps.v1app.outputs.count == '0' && steps.v1plugins.outputs.count == '0'
         working-directory: ${{ steps.detect.outputs.project_dir }}
-        run: flutter build apk --release -v
+        shell: bash
+        run: |
+          set -euo pipefail
+          LOG=build_apk_strict.log
+          touch "$LOG"
+          grep -E "^/.+\.java:[0-9]+: error: " "$LOG" | sed -E 's#^(/.+\.java):([0-9]+): error: (.*)$#::error file=\1,line=\2::\3#g' || true
+          grep -E "^e: /.+\.kt: \([0-9]+, [0-9]+\): " "$LOG" | sed -E 's#^e: (/.+\.kt): \(([0-9]+), ([0-9]+)\): (.*)$#::error file=\1,line=\2,col=\3::\4#g' || true
+          grep -E "^(.*/)?lib/.+\.dart:[0-9]+:[0-9]+: (Error|Warning): " "$LOG" | sed -E 's#^(.*/)?(lib/.+\.dart):([0-9]+):([0-9]+): (Error|Warning): (.*)$#::error file=\2,line=\3,col=\4::\6#g' || true
+          if grep -q "Build failed due to use of deleted Android v1 embedding" "$LOG"; then
+            echo "::error::Flutter 工具检测到 Android v1 嵌入。可能位置如下："
+            grep -R --include=*.{kt,java} -nE 'io\.flutter\.app\.(Flutter(Activity|FragmentActivity|Application))|io\.flutter\.view\.FlutterMain|GeneratedPluginRegistrant\.registerWith|PluginRegistry(\.Registrar)?|registerWith\s*\(|ShimPluginRegistry|PluginRegistrantCallback' android 2>/dev/null | sed -E 's#^(.+):([0-9]+):(.*)$#::error file=\1,line=\2::\3#g' || true
+            PUB_CACHE="${PUB_CACHE:-$HOME/.pub-cache}"
+            grep -R --include=*.{kt,java} -nE 'io\.flutter\.app\.(Flutter(Activity|FragmentActivity|Application))|io\.flutter\.view\.FlutterMain|GeneratedPluginRegistrant\.registerWith|PluginRegistry(\.Registrar)?|registerWith\s*\(|ShimPluginRegistry|PluginRegistrantCallback' "$PUB_CACHE" 2>/dev/null | head -n 300 | sed -E 's#^(.+):([0-9]+):(.*)$#::warning file=\1,line=\2::\3#g' || true
+          fi
 
-      - name: Set Up Flutter 3.19.6 (Fallback)
+      - name: Fail if build failed (Flutter 3.22 strict)
+        if: steps.detect.outputs.project_type == 'flutter' && steps.v1app.outputs.count == '0' && steps.v1plugins.outputs.count == '0'
+        shell: bash
+        run: |
+          exit "${{ steps.build_strict.outputs.code }}"
+      # ====== ⬆️ Flutter 3.22 严格构建（三步） ======
+
+      # ③ 发现 v1 → 回退到 v1 兼容 SDK（3.19.6）再构建
+      - name: Set up Flutter (fallback / 3.19.6 v1-compatible)
         if: steps.detect.outputs.project_type == 'flutter' && (steps.v1app.outputs.count != '0' || steps.v1plugins.outputs.count != '0')
         id: flutter_fallback
         uses: subosito/flutter-action@v2
@@ -256,15 +238,40 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Pub Get (Fallback)
+      - name: Pub get (fallback)
         if: steps.detect.outputs.project_type == 'flutter' && (steps.v1app.outputs.count != '0' || steps.v1plugins.outputs.count != '0')
         working-directory: ${{ steps.detect.outputs.project_dir }}
         run: flutter pub get
 
-      - name: Build APK (Flutter 3.19.6 Fallback)
+      # ====== ⬇️ Flutter 3.19.6 回退构建（三步） ======
+      - name: Build APK (Flutter fallback 3.19.6 · capture logs)
+        if: steps.detect.outputs.project_type == 'flutter' && (steps.v1app.outputs.count != '0' || steps.v1plugins.outputs.count != '0')
+        id: build_fallback
+        working-directory: ${{ steps.detect.outputs.project_dir }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          (flutter build apk --release -v) 2>&1 | tee build_apk_fb.log
+          echo "code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+
+      - name: Annotate compiler errors (Flutter 3.19.6 fallback)
         if: steps.detect.outputs.project_type == 'flutter' && (steps.v1app.outputs.count != '0' || steps.v1plugins.outputs.count != '0')
         working-directory: ${{ steps.detect.outputs.project_dir }}
-        run: flutter build apk --release -v
+        shell: bash
+        run: |
+          set -euo pipefail
+          LOG=build_apk_fb.log
+          touch "$LOG"
+          grep -E "^/.+\.java:[0-9]+: error: " "$LOG" | sed -E 's#^(/.+\.java):([0-9]+): error: (.*)$#::error file=\1,line=\2::\3#g' || true
+          grep -E "^e: /.+\.kt: \([0-9]+, [0-9]+\): " "$LOG" | sed -E 's#^e: (/.+\.kt): \(([0-9]+), ([0-9]+)\): (.*)$#::error file=\1,line=\2,col=\3::\4#g' || true
+          grep -E "^(.*/)?lib/.+\.dart:[0-9]+:[0-9]+: (Error|Warning): " "$LOG" | sed -E 's#^(.*/)?(lib/.+\.dart):([0-9]+):([0-9]+): (Error|Warning): (.*)$#::error file=\2,line=\3,col=\4::\6#g' || true
+
+      - name: Fail if build failed (Flutter 3.19.6 fallback)
+        if: steps.detect.outputs.project_type == 'flutter' && (steps.v1app.outputs.count != '0' || steps.v1plugins.outputs.count != '0')
+        shell: bash
+        run: |
+          exit "${{ steps.build_fallback.outputs.code }}"
+      # ====== ⬆️ Flutter 3.19.6 回退构建（三步） ======
 
       - name: Upload APK (Flutter)
         if: steps.detect.outputs.project_type == 'flutter'
@@ -273,21 +280,45 @@ jobs:
           name: quote_app-apk
           path: ${{ steps.detect.outputs.project_dir }}/build/app/outputs/flutter-apk/app-release.apk
 
-      - name: Set Up Gradle 8.4
+      # ---------- Gradle path (fallback) ----------
+      - name: Set up Gradle 8.4
         if: steps.detect.outputs.project_type == 'gradle'
         uses: gradle/actions/setup-gradle@v3
         with:
           gradle-version: 8.4
 
-      - name: Assemble Debug (Gradle)
+      # ====== ⬇️ Gradle 构建：同样捕获→注解→失败 ======
+      - name: Assemble debug with Gradle wrapper (capture logs)
+        if: steps.detect.outputs.project_type == 'gradle'
+        id: gradle_build
+        working-directory: ${{ steps.detect.outputs.project_dir }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -x "./gradlew" ]]; then
+            (./gradlew assembleDebug --stacktrace --warning-mode all) 2>&1 | tee gradle_build.log
+          else
+            (gradle assembleDebug --no-daemon --stacktrace --warning-mode all) 2>&1 | tee gradle_build.log
+          fi
+          echo "code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+
+      - name: Annotate compiler errors (Gradle)
         if: steps.detect.outputs.project_type == 'gradle'
         working-directory: ${{ steps.detect.outputs.project_dir }}
+        shell: bash
         run: |
-          if [[ -x "./gradlew" ]]; then
-            ./gradlew assembleDebug
-          else
-            gradle assembleDebug --no-daemon
-          fi
+          set -euo pipefail
+          LOG=gradle_build.log
+          touch "$LOG"
+          grep -E "^/.+\.java:[0-9]+: error: " "$LOG" | sed -E 's#^(/.+\.java):([0-9]+): error: (.*)$#::error file=\1,line=\2::\3#g' || true
+          grep -E "^e: /.+\.kt: \([0-9]+, [0-9]+\): " "$LOG" | sed -E 's#^e: (/.+\.kt): \(([0-9]+), ([0-9]+)\): (.*)$#::error file=\1,line=\2,col=\3::\4#g' || true
+
+      - name: Fail if build failed (Gradle)
+        if: steps.detect.outputs.project_type == 'gradle'
+        shell: bash
+        run: |
+          exit "${{ steps.gradle_build.outputs.code }}"
+      # ====== ⬆️ Gradle 构建：同样捕获→注解→失败 ======
 
       - name: Upload APK (Gradle)
         if: steps.detect.outputs.project_type == 'gradle'
@@ -296,3 +327,15 @@ jobs:
           name: debug-apk
           path: |
             ${{ steps.detect.outputs.project_dir }}/**/outputs/apk/**/*.apk
+
+      # 方便排查：总是上传日志（不影响原有产物）
+      - name: Upload build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: |
+            ${{ steps.detect.outputs.project_dir }}/build_apk_strict.log
+            ${{ steps.detect.outputs.project_dir }}/build_apk_fb.log
+            ${{ steps.detect.outputs.project_dir }}/gradle_build.log
+          if-no-files-found: ignore
