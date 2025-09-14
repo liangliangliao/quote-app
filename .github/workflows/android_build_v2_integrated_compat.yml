@@ -134,11 +134,11 @@ jobs:
           fi
           if [ -f android/app/src/main/java/com/example/quote_app/MainActivity.java ]; then
             cat > android/app/src/main/java/com/example/quote_app/MainActivity.java <<'EOF'
-package com.example.quote_app;
-import io.flutter.embedding.android.FlutterActivity;
-public class MainActivity extends FlutterActivity { }
-EOF
-          fi
+            package com.example.quote_app;
+            import io.flutter.embedding.android.FlutterActivity;
+             public class MainActivity extends FlutterActivity { }
+              EOF
+              fi
 
       # >>> Dependency upgrade with Dart-aware pins (avoid image_picker >=1.2.0 on Dart <3.6)
       - name: Upgrade dependencies to v2-safe set
