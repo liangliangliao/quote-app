@@ -12,13 +12,14 @@ jobs:
       GRADLE_OPTS: -Dorg.gradle.jvmargs="-Xmx4g"
 
     steps:
+      # ============== 基础准备 ==============
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Sanity · list repo root
+      - name: Sanity check - list repo root
         run: ls -lah
 
-      # 选“最新提交的 ZIP”，并在无跟踪文件时做兜底
+      # ① 选最新 zip（优先根目录被跟踪的 zip，其次任意被跟踪的 zip，最后按 mtime 全盘找）
       - name: Pick latest ZIP (prefer root tracked; robust fallbacks)
         id: pickzip
         shell: bash
@@ -49,8 +50,7 @@ jobs:
             SEL="$(ls -1t *.zip 2>/dev/null | head -n1 || true)"
           fi
           if [ -z "$SEL" ]; then
-            SEL="$(find . -maxdepth 6 -type f -name '*.zip' -printf '%T@ %p\n' 2>/dev/null \
-                | sort -nr | head -n1 | cut -d' ' -f2- || true)"
+            SEL="$(find . -maxdepth 6 -type f -name '*.zip' -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -n1 | cut -d' ' -f2- || true)"
             SEL="${SEL#./}"
           fi
           [ -n "$SEL" ] || { echo "No .zip files found."; exit 1; }
@@ -63,25 +63,40 @@ jobs:
           unzip -q "${{ steps.pickzip.outputs.zip }}" -d .
           echo "After unzip:"; ls -lah
 
-      - name: Detect Flutter project root
+      # ② 识别工程类型 & 根目录
+      - name: Detect project type and root
         id: detect
         shell: bash
         run: |
           set -euo pipefail
           FLUTTER_DIR="$(find . -maxdepth 6 -type f -name pubspec.yaml | head -n1 | xargs -I{} dirname {} || true)"
+          GRADLE_DIR=""
           if [ -z "$FLUTTER_DIR" ]; then
-            echo "❌ pubspec.yaml 未找到，无法判定 Flutter 工程目录"; exit 2
+            GRADLE_DIR="$(find . -maxdepth 6 -type f \( -name settings.gradle -o -name settings.gradle.kts \) | head -n1 | xargs -I{} dirname {} || true)"
           fi
-          echo "project_dir=$FLUTTER_DIR" >> "$GITHUB_OUTPUT"
-          echo "Detected Flutter project at: $FLUTTER_DIR"
+          if [ -n "$FLUTTER_DIR" ]; then
+            echo "project_type=flutter" >> "$GITHUB_OUTPUT"
+            echo "project_dir=$FLUTTER_DIR" >> "$GITHUB_OUTPUT"
+            echo "Detected Flutter project at: $FLUTTER_DIR"
+          elif [ -n "$GRADLE_DIR" ]; then
+            echo "project_type=gradle" >> "$GITHUB_OUTPUT"
+            echo "project_dir=$GRADLE_DIR" >> "$GITHUB_OUTPUT"
+            echo "Detected Android Gradle project at: $GRADLE_DIR"
+          else
+            echo "❌ 未检测到 Flutter 或 Android Gradle 工程（缺少 pubspec.yaml / settings.gradle）"
+            exit 2
+          fi
 
-      - name: Set up JDK 17
+      # ============== 工具链 ==============
+      - name: Set up JDK 17 (for both Flutter & Gradle)
+        if: steps.detect.outputs.project_type == 'flutter' || steps.detect.outputs.project_type == 'gradle'
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
       - name: Set up Flutter 3.22.0 (stable)
+        if: steps.detect.outputs.project_type == 'flutter'
         id: flutter
         uses: subosito/flutter-action@v2
         with:
@@ -89,65 +104,152 @@ jobs:
           channel: stable
           cache: true
 
-      # 关键：无条件绕过 Flutter 工具的 v1 嵌入守门（仅在 CI 环境）
-      - name: Force-bypass Android v1 gate in flutter_tools
+      # ============== 关键：绕过 v1 门禁（只限 CI） ==============
+      # 目的：避免“Build failed due to use of deleted Android v1 embedding.”过早退出，
+      # 从而进入真正的编译阶段，生成能定位到文件与行号的错误。
+      - name: TEMP – bypass v1 gate in flutter_tools (CI-only)
+        if: steps.detect.outputs.project_type == 'flutter'
         shell: bash
         run: |
           set -euo pipefail
-          echo "FLUTTER_ROOT = ${FLUTTER_ROOT}"
+          echo "FLUTTER_ROOT=${FLUTTER_ROOT}"
           TOOLS_DIR="$FLUTTER_ROOT/packages/flutter_tools/lib/src"
-          sed -i 's/checkForDeprecation();//' "$TOOLS_DIR/project.dart" || true
-          sed -i "s/Build failed due to use of deleted Android v1 embedding\./Bypassed v1 gate in CI./" "$TOOLS_DIR/project.dart" || true
+          # 安全修改：把调用 checkForDeprecation() 的地方注释掉（如果找不到也不报错）
+          grep -Rnl "checkForDeprecation\(\);" "$TOOLS_DIR" || true
+          sed -i 's/checkForDeprecation();/\/\/* ci bypass *\//g' "$TOOLS_DIR"/project.dart || true
+          sed -i 's/Build failed due to use of deleted Android v1 embedding./Bypassed v1 gate in CI./' "$TOOLS_DIR"/project.dart || true
 
       - name: Flutter pub get
+        if: steps.detect.outputs.project_type == 'flutter'
         working-directory: ${{ steps.detect.outputs.project_dir }}
         run: flutter pub get
 
-      # ===== 捕获→标注→按原样失败 =====
+      # ============== 构建 & 捕获日志 & 标注错误 ==============
       - name: Build APK (capture logs)
-        id: build
+        if: steps.detect.outputs.project_type == 'flutter'
+        id: flutter_build
         working-directory: ${{ steps.detect.outputs.project_dir }}
         shell: bash
         run: |
-          set -euo pipefail
-          (flutter build apk --release -v) 2>&1 | tee build_apk.log
-          echo "code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+          set -o pipefail
+          set +e
+          flutter build apk --release -v 2>&1 | tee build_apk.log
+          CODE=${PIPESTATUS[0]}
+          set -e
+          echo "code=$CODE" >> "$GITHUB_OUTPUT"
+          echo "Flutter build exit code: $CODE"
 
-      - name: Annotate compiler errors
-        if: always()
+      - name: Gradle fallback compile (assembleRelease --stacktrace)
+        if: steps.detect.outputs.project_type == 'flutter'
+        id: gradle_fallback
+        working-directory: ${{ steps.detect.outputs.project_dir }}/android
+        shell: bash
+        run: |
+          set -o pipefail
+          LOG="../gradle_build.log"
+          if [[ -x ./gradlew ]]; then
+            set +e
+            ./gradlew :app:assembleRelease --stacktrace --info 2>&1 | tee "$LOG"
+            GCODE=${PIPESTATUS[0]}
+            set -e
+            echo "gcode=$GCODE" >> "$GITHUB_OUTPUT"
+            echo "Gradle exit code: $GCODE"
+          else
+            echo "No gradlew wrapper found, skip Gradle fallback." | tee "$LOG"
+            echo "gcode=0" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Annotate compiler errors (from flutter & gradle logs)
+        if: steps.detect.outputs.project_type == 'flutter'
         working-directory: ${{ steps.detect.outputs.project_dir }}
         shell: bash
         run: |
           set -euo pipefail
-          LOG=build_apk.log
-          touch "$LOG"
-          # Java 错误
-          grep -E "^/.+\.java:[0-9]+: error: " "$LOG" \
-            | sed -E 's#^(/.+\.java):([0-9]+): error: (.*)$#::error file=\1,line=\2::\3#g' || true
-          # Kotlin 错误
-          grep -E "^e: /.+\.kt: \([0-9]+, [0-9]+\): " "$LOG" \
-            | sed -E 's#^e: (/.+\.kt): \(([0-9]+), ([0-9]+)\): (.*)$#::error file=\1,line=\2,col=\3::\4#g' || true
-          # Dart 错误/警告
-          grep -E "^(.*/)?lib/.+\.dart:[0-9]+:[0-9]+: (Error|Warning): " "$LOG" \
-            | sed -E 's#^(.*/)?(lib/.+\.dart):([0-9]+):([0-9]+): (Error|Warning): (.*)$#::error file=\2,line=\3,col=\4::\6#g' || true
+          FLUTTER_LOG="build_apk.log"
+          GRADLE_LOG="gradle_build.log"
+          touch "$FLUTTER_LOG" "$GRADLE_LOG"
+
+          annotate() {
+            local LOG="$1"
+            echo ">>> scanning $LOG"
+
+            # Java: /path/Foo.java:123: error: xxx
+            grep -E "^/.+\.java:[0-9]+: error: " "$LOG" \
+              | sed -E 's#^(/.+\.java):([0-9]+): error: (.*)$#::error file=\1,line=\2::\3#g' || true
+
+            # Kotlin: e: /path/Foo.kt: (12, 8): xxx
+            grep -E "^e: /.+\.kt: \([0-9]+, [0-9]+\): " "$LOG" \
+              | sed -E 's#^e: (/.+\.kt): \(([0-9]+), ([0-9]+)\): (.*)$#::error file=\1,line=\2,col=\3::\4#g' || true
+
+            # Dart: lib/foo.dart:12:34: Error: xxx
+            grep -E "^(.*/)?lib/.+\.dart:[0-9]+:[0-9]+: (Error|Warning): " "$LOG" \
+              | sed -E 's#^(.*/)?(lib/.+\.dart):([0-9]+):([0-9]+): (Error|Warning): (.*)$#::error file=\2,line=\3,col=\4::\6#g' || true
+
+            # Manifest 合并 / aapt 错误（含文件与行）
+            grep -E "AndroidManifest\.xml:[0-9]+(:[0-9]+)?: error" "$LOG" \
+              | sed -E 's#^(.*/AndroidManifest\.xml):([0-9]+)(:[0-9]+)?: error:? (.*)$#::error file=\1,line=\2::\4#g' || true
+
+            # aapt2 资源错误：/res/...xml:12: error:
+            grep -E "^/.+\.xml:[0-9]+: error:" "$LOG" \
+              | sed -E 's#^(/.+\.xml):([0-9]+): error: (.*)$#::error file=\1,line=\2::\3#g' || true
+          }
+
+          echo "=== Annotating from Flutter log ==="
+          annotate "$FLUTTER_LOG"
+          echo "=== Annotating from Gradle log ==="
+          annotate "$GRADLE_LOG"
 
       - name: Fail if build failed
-        if: always()
+        if: steps.detect.outputs.project_type == 'flutter'
         shell: bash
         run: |
-          exit "${{ steps.build.outputs.code }}"
+          FB="${{ steps.flutter_build.outputs.code }}"
+          GB="${{ steps.gradle_fallback.outputs.gcode }}"
+          [[ -z "$FB" ]] && FB=0
+          [[ -z "$GB" ]] && GB=0
+          echo "Final exit codes -> flutter: $FB, gradle: $GB"
+          if [[ "$FB" != "0" || "$GB" != "0" ]]; then
+            exit 1
+          fi
 
-      - name: Upload APK (if any)
-        if: success()
+      - name: Upload APK (Flutter)
+        if: steps.detect.outputs.project_type == 'flutter' && success()
         uses: actions/upload-artifact@v4
         with:
           name: app-release
           path: ${{ steps.detect.outputs.project_dir }}/build/app/outputs/flutter-apk/app-release.apk
 
       - name: Upload build logs (always)
-        if: always()
+        if: steps.detect.outputs.project_type == 'flutter'
         uses: actions/upload-artifact@v4
         with:
           name: build-logs
-          path: ${{ steps.detect.outputs.project_dir }}/build_apk.log
+          path: |
+            ${{ steps.detect.outputs.project_dir }}/build_apk.log
+            ${{ steps.detect.outputs.project_dir }}/gradle_build.log
           if-no-files-found: warn
+
+      # ============== Gradle-only 工程兜底 ==============
+      - name: Set up Gradle 8.4
+        if: steps.detect.outputs.project_type == 'gradle'
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: 8.4
+
+      - name: Assemble debug with Gradle wrapper
+        if: steps.detect.outputs.project_type == 'gradle'
+        working-directory: ${{ steps.detect.outputs.project_dir }}
+        run: |
+          if [[ -x "./gradlew" ]]; then
+            ./gradlew assembleDebug --stacktrace --info
+          else
+            gradle assembleDebug --no-daemon --stacktrace --info
+          fi
+
+      - name: Upload APK (Gradle)
+        if: steps.detect.outputs.project_type == 'gradle'
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-apk
+          path: |
+            ${{ steps.detect.outputs.project_dir }}/**/outputs/apk/**/*.apk
