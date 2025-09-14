@@ -16,6 +16,7 @@ jobs:
 
       - name: Sanity check - list repo root
         run: ls -lah
+
       - name: Pick latest ZIP (prefer root tracked; robust fallbacks)
         id: pickzip
         shell: bash
@@ -23,11 +24,9 @@ jobs:
           set -euo pipefail
           cd "$GITHUB_WORKSPACE"
 
-          # 1) 根目录、被 git 追踪的 zip
           ROOT_TRACKED="$(git ls-files --full-name | awk '/^[^\\/]+\\.zip$/ {print}' || true)"
 
           pick_by_git_commit() {
-            # 从文件列表中按“最后一次提交时间”取最新
             printf "%s\n" "$1" | while IFS= read -r f; do
               [ -n "$f" ] || continue
               ct="$(git log -1 --format=%ct -- "$f" 2>/dev/null || echo 0)"
@@ -40,7 +39,6 @@ jobs:
             SEL="$(pick_by_git_commit "$ROOT_TRACKED")"
           fi
 
-          # 2) 仓库任意目录、被追踪的 zip
           if [ -z "$SEL" ]; then
             ANY_TRACKED="$(git ls-files --full-name | awk '/\\.zip$/ {print}' || true)"
             if [ -n "${ANY_TRACKED:-}" ]; then
@@ -48,15 +46,12 @@ jobs:
             fi
           fi
 
-          # 3) 根目录未追踪 zip（按 mtime）
           if [ -z "$SEL" ]; then
             SEL="$(ls -1t *.zip 2>/dev/null | head -n1 || true)"
           fi
 
-          # 4) 任意目录未追踪 zip（按 mtime）
           if [ -z "$SEL" ]; then
             SEL="$(find . -maxdepth 6 -type f -name '*.zip' -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -n1 | cut -d' ' -f2- || true)"
-            # 去掉开头的 ./ 以便后续拼接路径
             SEL="${SEL#./}"
           fi
 
@@ -68,26 +63,23 @@ jobs:
 
           echo "Picked ZIP: $SEL"
           echo "zip=$GITHUB_WORKSPACE/$SEL" >> "$GITHUB_OUTPUT"
+
       - name: Unzip project
         shell: bash
         run: |
           unzip -q "${{ steps.pickzip.outputs.zip }}" -d .
           echo "After unzip:"; ls -lah
+
       - name: Detect project type and root
         id: detect
         shell: bash
         run: |
           set -euo pipefail
-          # 1) 找 Flutter 项目根（含 pubspec.yaml）
           FLUTTER_DIR="$(find . -maxdepth 6 -type f -name pubspec.yaml | head -n1 | xargs -I{} dirname {} || true)"
           GRADLE_DIR=""
-
-          # 2) 若不是 Flutter，找原生 Android Gradle 工程
           if [ -z "$FLUTTER_DIR" ]; then
-            GRADLE_DIR="$(find . -maxdepth 6 -type f \( -name settings.gradle -o -name settings.gradle.kts \) \
-                           | head -n1 | xargs -I{} dirname {} || true)"
+            GRADLE_DIR="$(find . -maxdepth 6 -type f \( -name settings.gradle -o -name settings.gradle.kts \) | head -n1 | xargs -I{} dirname {} || true)"
           fi
-
           if [ -n "$FLUTTER_DIR" ]; then
             echo "project_type=flutter" >> "$GITHUB_OUTPUT"
             echo "project_dir=$FLUTTER_DIR" >> "$GITHUB_OUTPUT"
@@ -99,7 +91,8 @@ jobs:
           else
             echo "❌ 未检测到 Flutter 或 Android Gradle 工程（缺少 pubspec.yaml / settings.gradle）"
             exit 2
-          fi  
+          fi
+
       # ---------- Flutter path (preferred) ----------
       - name: Set up JDK 17 (for both Flutter & Gradle)
         if: steps.detect.outputs.project_type == 'flutter' || steps.detect.outputs.project_type == 'gradle'
@@ -121,47 +114,35 @@ jobs:
         working-directory: ${{ steps.detect.outputs.project_dir }}
         shell: bash
         run: |
-         set -euo pipefail
-         # 清掉旧缓存，避免拉到旧插件
+          set -euo pipefail
           rm -rf "$HOME/.pub-cache"
-         flutter clean || true
-
-          # 将可能触发 v1 的插件锁到 v2-safe 版本（示例：workmanager）
+          flutter clean || true
           dart pub remove workmanager || true
           dart pub add workmanager:^0.7.0
-
-          # 获取依赖并打印解析结果
           flutter pub get
           echo "== Direct dependencies resolved =="
           flutter pub deps --style=compact | sed -n '/direct dependencies:/,/dev dependencies:/p'
+          PUB_CACHE="${PUB_CACHE:-$HOME/.pub-cache}"
+          echo "== Scan v1 markers in pub cache =="
+          grep -R --include=*.java --include=*.kt -nE 'PluginRegistry\.Registrar|registerWith\s*\(|ShimPluginRegistry|io\.flutter\.app|FlutterApplication' "$PUB_CACHE" 2>/dev/null || true
 
-           # 诊断：如果还有其它插件是 v1 写法，这里能看到具体命中路径
-           PUB_CACHE="${PUB_CACHE:-$HOME/.pub-cache}"
-           echo "== Scan v1 markers in pub cache =="
-           grep -R --include=*.java --include=*.kt -nE \
-           'PluginRegistry\.Registrar|registerWith\s*\(|ShimPluginRegistry|io\.flutter\.app|FlutterApplication' \
-           "$PUB_CACHE" 2>/dev/null || true
       - name: Diagnose Android v1 offenders (fail early with list)
         if: steps.detect.outputs.project_type == 'flutter'
         working-directory: ${{ steps.detect.outputs.project_dir }}
         shell: bash
         run: |
-         set -euo pipefail
-         echo "== Scan project android/ for v1 markers =="
-         (grep -R -nE 'io\.flutter\.app|FlutterApplication|GeneratedPluginRegistrant|PluginRegistry\.Registrar|registerWith\s*\(|ShimPluginRegistry' android || true)
-
-         echo "== Scan pub cache (plugins) for v1 markers =="
-         PUB_CACHE="${PUB_CACHE:-$HOME/.pub-cache}"
-         MATCHES="$(grep -R --include=*.java --include=*.kt -nE \
-         'PluginRegistry\.Registrar|registerWith\s*\(|ShimPluginRegistry|io\.flutter\.app|FlutterApplication' \
-          "$PUB_CACHE" 2>/dev/null || true)"
-
+          set -euo pipefail
+          echo "== Scan project android/ for v1 markers =="
+          (grep -R -nE 'io\.flutter\.app|FlutterApplication|GeneratedPluginRegistrant|PluginRegistry\.Registrar|registerWith\s*\(|ShimPluginRegistry' android || true)
+          echo "== Scan pub cache (plugins) for v1 markers =="
+          PUB_CACHE="${PUB_CACHE:-$HOME/.pub-cache}"
+          MATCHES="$(grep -R --include=*.java --include=*.kt -nE 'PluginRegistry\.Registrar|registerWith\s*\(|ShimPluginRegistry|io\.flutter\.app|FlutterApplication' "$PUB_CACHE" 2>/dev/null || true)"
           if [ -n "$MATCHES" ]; then
-          echo "$MATCHES"
-          echo "::error::Found Android v1 embedding in above plugin files. Upgrade/replace those plugins."
-          exit 1
+            echo "$MATCHES"
+            echo "::error::Found Android v1 embedding in above plugin files. Upgrade/replace those plugins."
+            exit 1
           else
-           echo "No v1 markers found in pub cache."
+            echo "No v1 markers found in pub cache."
           fi
 
       - name: Remove checked-in GeneratedPluginRegistrant (old template leftover)
@@ -173,18 +154,14 @@ jobs:
           rm -f android/app/src/main/java/io/flutter/plugins/GeneratedPluginRegistrant.java
           rm -f android/app/src/main/kotlin/io/flutter/plugins/GeneratedPluginRegistrant.kt
 
-         # （可选）再扫一遍确认 app 代码已干净
       - name: Re-check app code is v1-clean
         if: steps.detect.outputs.project_type == 'flutter'
         working-directory: ${{ steps.detect.outputs.project_dir }}
         shell: bash
         run: |
-         set -euo pipefail
-         grep -R --include=*.kt --include=*.java -nE \
-         'io\.flutter\.app|FlutterApplication|GeneratedPluginRegistrant\.registerWith|PluginRegistry\.Registrar|registerWith\s*\(|ShimPluginRegistry|PluginRegistrantCallback' \
-         android && { echo "::error::app 代码仍有 v1 痕迹"; exit 1; } || echo "app 代码已无 v1 痕迹"
-      
-      
+          set -euo pipefail
+          grep -R --include=*.kt --include=*.java -nE 'io\.flutter\.app|FlutterApplication|GeneratedPluginRegistrant\.registerWith|PluginRegistry\.Registrar|registerWith\s*\(|ShimPluginRegistry|PluginRegistrantCallback' android && { echo "::error::app 代码仍有 v1 痕迹"; exit 1; } || echo "app 代码已无 v1 痕迹"
+
       - name: Diagnose v1 markers in *app code* only
         if: steps.detect.outputs.project_type == 'flutter'
         working-directory: ${{ steps.detect.outputs.project_dir }}
@@ -192,25 +169,46 @@ jobs:
         run: |
           set -euo pipefail
           echo "== Scan android/ (app code) for v1 markers =="
-          MATCHES="$(grep -R --include=*.kt --include=*.java -nE \
-          'io\.flutter\.app|FlutterApplication|GeneratedPluginRegistrant\.registerWith|PluginRegistry\.Registrar|registerWith\s*\(|ShimPluginRegistry|PluginRegistrantCallback' \
-          android 2>/dev/null || true)"
+          MATCHES="$(grep -R --include=*.kt --include=*.java -nE 'io\.flutter\.app|FlutterApplication|GeneratedPluginRegistrant\.registerWith|PluginRegistry\.Registrar|registerWith\s*\(|ShimPluginRegistry|PluginRegistrantCallback' android 2>/dev/null || true)"
           if [ -n "$MATCHES" ]; then
-          echo "$MATCHES"
-           echo "::error::Your *app* android code still references Android v1 embedding APIs above."
-           exit 1
-            else
-           echo "No v1 markers found in app code (android/)."
+            echo "$MATCHES"
+            echo "::error::Your *app* android code still references Android v1 embedding APIs above."
+            exit 1
+          else
+            echo "No v1 markers found in app code (android/)."
           fi
 
       - name: Sanity:show project dir & critical files
+        if: steps.detect.outputs.project_type == 'flutter'
         shell: bash
         working-directory: ${{ steps.detect.outputs.project_dir }}
         run: |
           pwd
           ls -al android/app/src/main/java/io/flutter/plugins || true
           sed -n '1,120p' android/app/src/main/AndroidManifest.xml
-    
+
+      # ✅ 新增：在不改动其它步骤的前提下，规范 Manifest 为 v2（必要时才修改）
+      - name: Normalize AndroidManifest to v2 (MainActivity + embedding=2)
+        if: steps.detect.outputs.project_type == 'flutter'
+        shell: bash
+        working-directory: ${{ steps.detect.outputs.project_dir }}
+        run: |
+          set -euo pipefail
+          MANI="android/app/src/main/AndroidManifest.xml"
+          [ -f "$MANI" ] || exit 0
+          # 去掉任何 FlutterApplication v1 标记
+          sed -i 's/android:name="io\.flutter\.app\.FlutterApplication"[^>]*//g' "$MANI"
+          # 确保 embedding=2 meta-data 存在（插在 <application> 后）
+          if ! grep -q 'android:name="flutterEmbedding"' "$MANI"; then
+            awk '{
+              print
+            } /<application[^>]*>/ && !i {print "        <meta-data android:name=\"flutterEmbedding\" android:value=\"2\"/>"; i=1}' "$MANI" > "$MANI.__tmp__" && mv "$MANI.__tmp__" "$MANI"
+          fi
+          # 若仍使用框架 FlutterActivity，改为指向你的 MainActivity
+          if grep -q 'android:name="io.flutter.embedding.android.FlutterActivity"' "$MANI"; then
+            sed -i 's/android:name="io\.flutter\.embedding\.android\.FlutterActivity"/android:name=".MainActivity"/' "$MANI"
+          fi
+
       - name: Build APK (Flutter release)
         if: steps.detect.outputs.project_type == 'flutter'
         run: flutter build apk --release
