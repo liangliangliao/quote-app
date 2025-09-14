@@ -106,31 +106,63 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          shopt -s nullglob
-          mapfile -t MANIS < <(find android/app/src -type f -name AndroidManifest.xml)
+          ANDROID_DIR="android"
+          APP_DIR="$ANDROID_DIR/app/src"
 
-          for MANI in "${MANIS[@]}"; do
-            echo "Normalizing ${MANI}"
-            sed -i -E 's/[[:space:]]*android:name="io\.flutter\.app\.FlutterApplication"//g' "$MANI"
-            if ! grep -q 'android:name="flutterEmbedding"' "$MANI"; then
-              awk '
-                BEGIN{added=0}
-                /<application[^>]*>/{
-                  print
-                  if(added==0){
-                    print "        <meta-data android:name=\"flutterEmbedding\" android:value=\"2\"/>"
-                    added=1
-                    next
-                  }
-                }
-                {print}
-              ' "$MANI" > "$MANI.__tmp__" && mv "$MANI.__tmp__" "$MANI"
+          # 1) Normalize AndroidManifest.xml: remove v1 Application; add embedding=2; ensure .MainActivity
+          mapfile -t MANIS < <(find "$APP_DIR" -type f -name AndroidManifest.xml)
+          for M in "${MANIS[@]}"; do
+            sed -i -E 's/[[:space:]]*android:name="io\.flutter\.app\.FlutterApplication"//g' "$M"
+            sed -i -E 's/android:name="io\.flutter\.embedding\.android\.FlutterActivity"/android:name=".MainActivity"/g' "$M" || true
+            if ! grep -q 'android:name="flutterEmbedding"' "$M"; then
+              awk '{print} /<application[^>]*>/ && !i {print "        <meta-data android:name=\"flutterEmbedding\" android:value=\"2\"/>"; i=1}' "$M" > "$M.__tmp__" && mv "$M.__tmp__" "$M"
             fi
-            sed -i -E 's/android:name="io\.flutter\.embedding\.android\.FlutterActivity"/android:name=".MainActivity"/g' "$MANI"
           done
 
-          echo "== After patch, quick check =="
-          grep -R -nE 'flutterEmbedding|io\.flutter\.app\.FlutterApplication' android/app/src || true
+          # 2) Patch MainActivity to v2 (Kotlin / Java)
+          MA_KT="$(find "$ANDROID_DIR" -type f -path "*/app/src/*/kotlin/*/MainActivity.kt" | head -n1 || true)"
+          MA_JAVA="$(find "$ANDROID_DIR" -type f -path "*/app/src/*/java/*/MainActivity.java" | head -n1 || true)"
+
+          if [ -n "$MA_KT" ]; then
+            sed -i 's#import io\.flutter\.app\.FlutterActivity#import io.flutter.embedding.android.FlutterActivity#g' "$MA_KT" || true
+            sed -i 's#import io\.flutter\.plugins\.GeneratedPluginRegistrant;*##g' "$MA_KT" || true
+            awk 'BEGIN{skip=0}
+                 /class[[:space:]]+MainActivity[[:space:]]*:[[:space:]]*FlutterActivity/ {print "class MainActivity: FlutterActivity() {}"; next}
+                 /override[[:space:]]+fun[[:space:]]+onCreate\(.*\)\s*{/ {skip=1; next}
+                 skip==1 && /GeneratedPluginRegistrant\.registerWith/ {next}
+                 skip==1 && /}/ {skip=0; next}
+                 skip==0 {print}' "$MA_KT" > "$MA_KT.__tmp__" && mv "$MA_KT.__tmp__" "$MA_KT"
+
+          elif [ -n "$MA_JAVA" ]; then
+            sed -i 's#import io\.flutter\.app\.FlutterActivity;#import io.flutter.embedding.android.FlutterActivity;#g' "$MA_JAVA" || true
+            sed -i 's#import io\.flutter\.plugins\.GeneratedPluginRegistrant;*;*##g' "$MA_JAVA" || true
+            awk 'BEGIN{skip=0}
+                 /public[[:space:]]+class[[:space:]]+MainActivity[[:space:]]+extends[[:space:]]+FlutterActivity/ {print "public class MainActivity extends FlutterActivity {}"; next}
+                 /void[[:space:]]+onCreate\(Bundle.*\)\s*{/ {skip=1; next}
+                 skip==1 && /GeneratedPluginRegistrant\.registerWith/ {next}
+                 skip==1 && /}/ {skip=0; next}
+                 skip==0 {print}' "$MA_JAVA" > "$MA_JAVA.__tmp__" && mv "$MA_JAVA.__tmp__" "$MA_JAVA"
+
+          else
+            PKG_LINE="$(grep -R --include=AndroidManifest.xml -nE 'package="' "$APP_DIR" | head -n1 | sed -E 's/.*package=\"([^"]+)\".*/\1/')"
+            PKG_DIR="$ANDROID_DIR/app/src/main/kotlin/$(echo "$PKG_LINE" | tr . /)"
+            mkdir -p "$PKG_DIR"
+            printf "package %s\nimport io.flutter.embedding.android.FlutterActivity\nclass MainActivity: FlutterActivity()\n" "$PKG_LINE" > "$PKG_DIR/MainActivity.kt"
+          fi
+
+          # 3) Remove any committed GeneratedPluginRegistrant (v1 artifact)
+          find "$ANDROID_DIR" -type f -regex '.*io/flutter/plugins/GeneratedPluginRegistrant\.\(java\|kt\)$' -print -delete || true
+
+          # 4) If a custom Application extends FlutterApplication, downgrade to native Application
+          mapfile -t APPS < <(grep -R --include=*.kt --include=*.java -lE 'extends[[:space:]]+FlutterApplication|:.*FlutterApplication\(\)' "$ANDROID_DIR" || true)
+          for A in "${APPS[@]}"; do
+            sed -i -E 's#extends[[:space:]]+FlutterApplication#extends android.app.Application#g' "$A" || true
+            sed -i -E 's#:.*FlutterApplication\(\)#: android.app.Application()#g' "$A" || true
+            sed -i -E 's#import[[:space:]]+io\.flutter\.app\.FlutterApplication;*##g' "$A" || true
+          done
+
+          echo "== Quick check after patch =="
+          (grep -R --include=*.kt --include=*.java -nE 'io\.flutter\.app\.Flutter(Application|Activity|FragmentActivity)|GeneratedPluginRegistrant\.registerWith|PluginRegistry|FlutterMain|ShimPluginRegistry' android 2>/dev/null || true) | sed -n '1,200p'
 
       - name: Upgrade Dependencies To V2-Safe Set
         if: steps.detect.outputs.project_type == 'flutter'
