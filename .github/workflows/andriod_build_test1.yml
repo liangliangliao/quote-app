@@ -5,7 +5,7 @@ on:
   push:
     paths:
       - "quote_app3333.zip"
-      - "quote_app_src_manifest_v2_fixed.zip"
+      - "quote_app_src_modified_manifest_no_label.zip"
 
 jobs:
   build:
@@ -35,8 +35,8 @@ jobs:
         shell: bash
         run: |
           set -e
-          if [[ -f "quote_app_src_manifest_v2_fixed.zip" ]]; then
-            zip="quote_app_src_manifest_v2_fixed.zip"
+          if [[ -f "quote_app_src_modified_manifest_no_label.zip" ]]; then
+            zip="quote_app_src_modified_manifest_no_label.zip"
           elif [[ -f "quote_app3333.zip" ]]; then    # 修正：同时支持 3333
             zip="quote_app3333.zip"
           elif [[ -f "quote_app333.zip" ]]; then     # 兼容原有命名
