@@ -133,7 +133,7 @@ jobs:
           grep -R -n 'flutterEmbedding' android/app/src/main/AndroidManifest.xml || true
 
       # 仅限 CI：把 flutter_tools 的 v1 守门员函数清空，允许进入真实编译阶段
-      - name: TEMP: bypass v1 gate in flutter_tools (CI-only)
+      - name: TEMP:bypass v1 gate in flutter_tools (CI-only)
         shell: bash
         run: |
           set -euo pipefail
