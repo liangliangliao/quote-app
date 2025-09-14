@@ -223,7 +223,7 @@ jobs:
           } >> android/.gitignore || true
           tail -n 6 android/.gitignore || true
 
-      - name: Sanity: show project dir & critical files
+      - name: Sanity:show project dir & critical files
         if: steps.detect.outputs.project_type == 'flutter'
         shell: bash
         working-directory: ${{ steps.detect.outputs.project_dir }}
@@ -238,7 +238,7 @@ jobs:
           [ -f android/app/src/profile/AndroidManifest.xml ] && sed -n '1,200p' android/app/src/profile/AndroidManifest.xml || true
 
       # 6) （仅在扫描确认 app & manifests 无 v1 痕迹时）临时关闭 flutter_tools 守门员
-      - name: TEMP: bypass v1 gate in flutter_tools (CI only; safe after scans)
+      - name: TEMP:bypass v1 gate in flutter_tools (CI only; safe after scans)
         if: steps.detect.outputs.project_type == 'flutter' && steps.v1scan.outputs.count == '0'
         shell: bash
         run: |
