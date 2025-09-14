@@ -186,8 +186,8 @@ jobs:
           [ -n "$MATCHES" ] && COUNT=1
           echo "count=$COUNT" >> "$GITHUB_OUTPUT"
 
-      # —— 严格模式下：若 app 与插件都无 v1 —— 可选择绕过守门员（应付误报）并直接构建
-      - name: TEMP: bypass v1 gate in flutter_tools (CI only; safe when both counts=0)
+       # —— 严格模式下：若 app 与插件都无 v1 —— 可选择绕过守门员（应付误报）并直接构建
+      - name: TEMP:bypass v1 gate in flutter_tools (CI only; safe when both counts=0)
         if: steps.detect.outputs.project_type == 'flutter' && steps.v1app.outputs.count == '0' && steps.v1plugins.outputs.count == '0'
         shell: bash
         run: |
